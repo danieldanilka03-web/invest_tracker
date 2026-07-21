@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'services/storage_service.dart';
 import 'services/theme_service.dart';
 import 'services/favorites_service.dart';
+import 'services/currency_service.dart';
 import 'screens/home_screen.dart';
 
 void main() async {
@@ -9,6 +10,7 @@ void main() async {
   await StorageService.init();
   await ThemeService.init();
   await FavoritesService.init();
+  await CurrencyService.init();
   runApp(const InvestTrackerApp());
 }
 

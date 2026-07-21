@@ -44,12 +44,16 @@ class _DashboardScreenState extends State<DashboardScreen> {
   @override
   Widget build(BuildContext context) {
     final timeline = AnalyticsService.portfolioValueTimeline();
-    final currentValue = AnalyticsService.currentPortfolioValue();
+    final currentValue = AnalyticsService.currentPortfolioValueRub();
+    final unrealizedPnl = AnalyticsService.totalUnrealizedPnlRub();
     final holdings = AnalyticsService.currentHoldings();
     final invested = AnalyticsService.totalInvested(f: _period);
     final income = AnalyticsService.totalIncome(f: _period);
     final bySector = AnalyticsService.investedBySector(f: _period);
     final incomeByMonth = AnalyticsService.incomeByMonth(f: _period == PeriodFilter.all ? PeriodFilter.year1 : _period);
+    final concentration = AnalyticsService.topHoldingConcentrationPct();
+    final topTicker = AnalyticsService.topHoldingTicker();
+    final xirr = AnalyticsService.xirrPercent();
     final primary = Theme.of(context).colorScheme.primary;
 
     // прирост стоимости за отображаемый период (по timeline)
@@ -110,6 +114,27 @@ class _DashboardScreenState extends State<DashboardScreen> {
                           style: const TextStyle(color: Colors.white, fontSize: 13, fontWeight: FontWeight.w600),
                         ),
                         Text(' за ${_periodLabel(_period).toLowerCase()}', style: const TextStyle(color: Colors.white70, fontSize: 12)),
+                      ],
+                    ),
+                  ),
+                if (holdings.isNotEmpty)
+                  Padding(
+                    padding: const EdgeInsets.only(top: 6),
+                    child: Row(
+                      children: [
+                        Icon(
+                          unrealizedPnl >= 0 ? Icons.arrow_upward : Icons.arrow_downward,
+                          color: Colors.white,
+                          size: 14,
+                        ),
+                        const SizedBox(width: 4),
+                        Flexible(
+                          child: Text(
+                            'P&L по открытым позициям: ${unrealizedPnl >= 0 ? "+" : ""}${unrealizedPnl.toStringAsFixed(0)} ₽',
+                            style: const TextStyle(color: Colors.white, fontSize: 12, fontWeight: FontWeight.w500),
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        ),
                       ],
                     ),
                   ),
@@ -174,6 +199,61 @@ class _DashboardScreenState extends State<DashboardScreen> {
               Expanded(child: _miniStat(context, 'Доход', income, Icons.payments_outlined)),
             ],
           ),
+          if (xirr != null) ...[
+            const SizedBox(height: 10),
+            Container(
+              padding: const EdgeInsets.all(14),
+              decoration: BoxDecoration(
+                color: Theme.of(context).colorScheme.surfaceContainerLow,
+                borderRadius: BorderRadius.circular(16),
+              ),
+              child: Row(
+                children: [
+                  Icon(Icons.percent, size: 20, color: Theme.of(context).colorScheme.primary),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text('Доходность (XIRR)', style: TextStyle(fontSize: 11, color: Colors.grey.shade500)),
+                        Text(
+                          '${xirr >= 0 ? "+" : ""}${xirr.toStringAsFixed(1)}% годовых',
+                          style: TextStyle(
+                            fontWeight: FontWeight.bold,
+                            fontSize: 15,
+                            color: xirr >= 0 ? Colors.green : Colors.red,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
+          if (concentration > 40 && topTicker != null) ...[
+            const SizedBox(height: 10),
+            Container(
+              padding: const EdgeInsets.all(14),
+              decoration: BoxDecoration(
+                color: Colors.orange.withOpacity(0.12),
+                borderRadius: BorderRadius.circular(16),
+                border: Border.all(color: Colors.orange.withOpacity(0.3)),
+              ),
+              child: Row(
+                children: [
+                  const Icon(Icons.warning_amber_rounded, size: 20, color: Colors.orange),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: Text(
+                      '$topTicker занимает ${concentration.toStringAsFixed(0)}% портфеля — низкая диверсификация',
+                      style: const TextStyle(fontSize: 12, color: Colors.orange),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
 
           const SizedBox(height: 24),
 
@@ -232,13 +312,28 @@ class _DashboardScreenState extends State<DashboardScreen> {
                   child: ListTile(
                     leading: TickerAvatar(ticker: e.key, size: 36),
                     title: Text(e.key, style: const TextStyle(fontWeight: FontWeight.w600)),
-                    subtitle: Text('${e.value.qty.toStringAsFixed(e.value.qty == e.value.qty.roundToDouble() ? 0 : 2)} шт • по ${e.value.lastPrice}'),
+                    subtitle: Text(
+                      '${e.value.qty.toStringAsFixed(e.value.qty == e.value.qty.roundToDouble() ? 0 : 2)} шт • ср. ${e.value.avgCost.toStringAsFixed(2)} → ${e.value.lastPrice.toStringAsFixed(2)}',
+                    ),
                     trailing: Row(
                       mainAxisSize: MainAxisSize.min,
                       children: [
-                        Text(
-                          e.value.value.toStringAsFixed(0),
-                          style: TextStyle(fontWeight: FontWeight.bold, color: Theme.of(context).colorScheme.primary),
+                        Column(
+                          crossAxisAlignment: CrossAxisAlignment.end,
+                          children: [
+                            Text(
+                              e.value.valueRub.toStringAsFixed(0),
+                              style: TextStyle(fontWeight: FontWeight.bold, color: Theme.of(context).colorScheme.primary),
+                            ),
+                            Text(
+                              '${e.value.pnlRub >= 0 ? "+" : ""}${e.value.pnlPct.toStringAsFixed(1)}%',
+                              style: TextStyle(
+                                fontSize: 11,
+                                fontWeight: FontWeight.w600,
+                                color: e.value.pnlRub >= 0 ? Colors.green : Colors.red,
+                              ),
+                            ),
+                          ],
                         ),
                         ValueListenableBuilder<int>(
                           valueListenable: FavoritesService.version,

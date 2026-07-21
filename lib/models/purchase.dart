@@ -52,6 +52,9 @@ class Purchase extends HiveObject {
   @HiveField(10)
   String? sector; // сектор экономики, для статистики по отраслям
 
+  @HiveField(11)
+  bool isSell; // true — это продажа, false — покупка
+
   Purchase({
     required this.id,
     required this.date,
@@ -64,7 +67,14 @@ class Purchase extends HiveObject {
     this.currency = 'RUB',
     this.note,
     this.sector,
+    this.isSell = false,
   });
+
+  /// Знаковое количество: продажа уменьшает позицию
+  double get signedQuantity => isSell ? -quantity : quantity;
+
+  /// Денежный поток сделки: покупка — расход (отрицательный), продажа — приход (положительный)
+  double get cashFlow => isSell ? (quantity * pricePerUnit - fee) : -(quantity * pricePerUnit + fee);
 
   double get total => quantity * pricePerUnit + fee;
 }

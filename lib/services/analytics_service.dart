@@ -1,10 +1,34 @@
-import '../models/deposit.dart';
+import 'dart:math' as math;
 import '../models/purchase.dart';
 import '../models/income.dart';
 import 'storage_service.dart';
+import 'currency_service.dart';
 
 /// Фильтр периода для статистики
 enum PeriodFilter { month1, month3, month6, year1, all }
+
+/// Текущая позиция по бумаге: количество, средняя цена входа, последняя цена сделки,
+/// стоимость сейчас и прибыль/убыток (в рублях — базовой валюте статистики)
+class HoldingInfo {
+  final double qty;
+  final double avgCost;
+  final double lastPrice;
+  final String currency;
+  final double costBasisRub;
+  final double valueRub;
+
+  HoldingInfo({
+    required this.qty,
+    required this.avgCost,
+    required this.lastPrice,
+    required this.currency,
+    required this.costBasisRub,
+    required this.valueRub,
+  });
+
+  double get pnlRub => valueRub - costBasisRub;
+  double get pnlPct => costBasisRub == 0 ? 0 : (pnlRub / costBasisRub) * 100;
+}
 
 class AnalyticsService {
   static DateTime? _periodStart(PeriodFilter f) {
@@ -23,18 +47,7 @@ class AnalyticsService {
     }
   }
 
-  static List<Deposit> filterDeposits(PeriodFilter f, {String? currency}) {
-    final start = _periodStart(f);
-    return StorageService.deposits.where((d) {
-      final okDate = start == null || d.date.isAfter(start);
-      final okCur = currency == null || d.currency == currency;
-      return okDate && okCur;
-    }).toList()
-      ..sort((a, b) => a.date.compareTo(b.date));
-  }
-
-  static List<Purchase> filterPurchases(PeriodFilter f,
-      {AssetType? type, String? sector}) {
+  static List<Purchase> filterPurchases(PeriodFilter f, {AssetType? type, String? sector}) {
     final start = _periodStart(f);
     return StorageService.purchases.where((p) {
       final okDate = start == null || p.date.isAfter(start);
@@ -55,127 +68,164 @@ class AnalyticsService {
       ..sort((a, b) => a.date.compareTo(b.date));
   }
 
-  /// Суммарно вложено (пополнения)
-  static double totalDeposited({PeriodFilter f = PeriodFilter.all}) =>
-      filterDeposits(f).fold(0.0, (s, d) => s + d.amount);
-
-  /// Суммарно потрачено на покупки
-  static double totalInvested({PeriodFilter f = PeriodFilter.all}) =>
-      filterPurchases(f).fold(0.0, (s, p) => s + p.total);
-
-  /// Суммарный доход (дивиденды + купоны), net
-  static double totalIncome({PeriodFilter f = PeriodFilter.all}) =>
-      filterIncomes(f).fold(0.0, (s, i) => s + i.amountNet);
-
-  /// Портфель: сколько чего куплено (агрегация по тикеру)
-  static Map<String, double> holdingsByTicker() {
-    final map = <String, double>{};
-    for (final p in StorageService.purchases) {
-      map[p.ticker] = (map[p.ticker] ?? 0) + p.quantity;
+  static double totalInvested({PeriodFilter f = PeriodFilter.all}) {
+    double sum = 0;
+    for (final p in filterPurchases(f)) {
+      final amountRub = CurrencyService.toRub(p.quantity * p.pricePerUnit + p.fee, p.currency);
+      sum += p.isSell ? -amountRub : amountRub;
     }
-    return map;
+    return sum;
   }
 
-  /// Распределение вложений по типу актива (для круговой диаграммы)
+  static double totalIncome({PeriodFilter f = PeriodFilter.all}) {
+    double sum = 0;
+    for (final i in filterIncomes(f)) {
+      sum += CurrencyService.toRub(i.amountNet, i.currency);
+    }
+    return sum;
+  }
+
   static Map<AssetType, double> investedByType({PeriodFilter f = PeriodFilter.all}) {
     final map = <AssetType, double>{};
     for (final p in filterPurchases(f)) {
-      map[p.type] = (map[p.type] ?? 0) + p.total;
+      final amount = CurrencyService.toRub(p.total, p.currency);
+      map[p.type] = (map[p.type] ?? 0) + (p.isSell ? -amount : amount);
     }
+    map.removeWhere((_, v) => v <= 0);
     return map;
   }
 
-  /// Распределение по секторам
   static Map<String, double> investedBySector({PeriodFilter f = PeriodFilter.all}) {
     final map = <String, double>{};
     for (final p in filterPurchases(f)) {
       final key = p.sector?.isNotEmpty == true ? p.sector! : 'Без сектора';
-      map[key] = (map[key] ?? 0) + p.total;
+      final amount = CurrencyService.toRub(p.total, p.currency);
+      map[key] = (map[key] ?? 0) + (p.isSell ? -amount : amount);
     }
+    map.removeWhere((_, v) => v <= 0);
     return map;
   }
 
-  /// Доход по месяцам (для столбчатого графика динамики дивидендов/купонов)
   static Map<String, double> incomeByMonth({PeriodFilter f = PeriodFilter.year1}) {
     final map = <String, double>{};
     for (final i in filterIncomes(f)) {
       final key = '${i.date.year}-${i.date.month.toString().padLeft(2, '0')}';
-      map[key] = (map[key] ?? 0) + i.amountNet;
+      map[key] = (map[key] ?? 0) + CurrencyService.toRub(i.amountNet, i.currency);
     }
     return map;
   }
 
-  /// Динамика пополнений по месяцам
-  static Map<String, double> depositsByMonth({PeriodFilter f = PeriodFilter.year1}) {
-    final map = <String, double>{};
-    for (final d in filterDeposits(f)) {
-      final key = '${d.date.year}-${d.date.month.toString().padLeft(2, '0')}';
-      map[key] = (map[key] ?? 0) + d.amount;
+  static Map<String, HoldingInfo> currentHoldings() {
+    final purchases = [...StorageService.purchases]..sort((a, b) => a.date.compareTo(b.date));
+
+    final qty = <String, double>{};
+    final costBasis = <String, double>{};
+    final lastPrice = <String, double>{};
+    final currencyOf = <String, String>{};
+
+    for (final p in purchases) {
+      final t = p.ticker;
+      qty.putIfAbsent(t, () => 0);
+      costBasis.putIfAbsent(t, () => 0);
+      currencyOf[t] = p.currency;
+      lastPrice[t] = p.pricePerUnit;
+
+      if (p.isSell) {
+        final curQty = qty[t]!;
+        if (curQty > 0) {
+          final avgCostPerUnit = costBasis[t]! / curQty;
+          final sellQty = p.quantity > curQty ? curQty : p.quantity;
+          costBasis[t] = costBasis[t]! - sellQty * avgCostPerUnit;
+        }
+        final newQty = curQty - p.quantity;
+        qty[t] = newQty < 0 ? 0 : newQty;
+      } else {
+        costBasis[t] = costBasis[t]! + p.quantity * p.pricePerUnit + p.fee;
+        qty[t] = qty[t]! + p.quantity;
+      }
     }
-    return map;
+
+    final result = <String, HoldingInfo>{};
+    qty.forEach((ticker, q) {
+      if (q <= 1e-9) return;
+      final cur = currencyOf[ticker] ?? 'RUB';
+      final avgCost = costBasis[ticker]! / q;
+      final price = lastPrice[ticker] ?? avgCost;
+      result[ticker] = HoldingInfo(
+        qty: q,
+        avgCost: avgCost,
+        lastPrice: price,
+        currency: cur,
+        costBasisRub: CurrencyService.toRub(costBasis[ticker]!, cur),
+        valueRub: CurrencyService.toRub(q * price, cur),
+      );
+    });
+    return result;
   }
 
-  /// Стоимость портфеля во времени.
-  /// Логика: каждая покупка обновляет количество бумаги и её "последнюю известную цену".
-  /// Стоимость портфеля в любой момент = сумма (кол-во каждой бумаги × её последняя цена покупки).
-  /// Это значит, что купив бумагу по новой цене, весь ранее накопленный объём этой бумаги
-  /// пересчитывается по новой цене — без обращения к интернету/котировкам.
+  static double currentPortfolioValueRub() =>
+      currentHoldings().values.fold(0.0, (s, h) => s + h.valueRub);
+
+  static double totalUnrealizedPnlRub() =>
+      currentHoldings().values.fold(0.0, (s, h) => s + h.pnlRub);
+
+  static double topHoldingConcentrationPct() {
+    final holdings = currentHoldings();
+    if (holdings.isEmpty) return 0;
+    final total = holdings.values.fold(0.0, (s, h) => s + h.valueRub);
+    if (total <= 0) return 0;
+    final maxValue = holdings.values.map((h) => h.valueRub).reduce((a, b) => a > b ? a : b);
+    return (maxValue / total) * 100;
+  }
+
+  static String? topHoldingTicker() {
+    final holdings = currentHoldings();
+    if (holdings.isEmpty) return null;
+    String? best;
+    double bestValue = -1;
+    holdings.forEach((ticker, h) {
+      if (h.valueRub > bestValue) {
+        bestValue = h.valueRub;
+        best = ticker;
+      }
+    });
+    return best;
+  }
+
   static List<MapEntry<DateTime, double>> portfolioValueTimeline() {
     final purchases = [...StorageService.purchases]..sort((a, b) => a.date.compareTo(b.date));
     if (purchases.isEmpty) return [];
 
     final qty = <String, double>{};
     final lastPrice = <String, double>{};
+    final currencyOf = <String, String>{};
     final points = <MapEntry<DateTime, double>>[];
 
     for (final p in purchases) {
-      qty[p.ticker] = (qty[p.ticker] ?? 0) + p.quantity;
+      final newQty = (qty[p.ticker] ?? 0) + p.signedQuantity;
+      qty[p.ticker] = newQty < 0 ? 0 : newQty;
       lastPrice[p.ticker] = p.pricePerUnit;
+      currencyOf[p.ticker] = p.currency;
 
       double total = 0;
       qty.forEach((ticker, q) {
-        total += q * (lastPrice[ticker] ?? 0);
+        final price = lastPrice[ticker] ?? 0;
+        total += CurrencyService.toRub(q * price, currencyOf[ticker] ?? 'RUB');
       });
       points.add(MapEntry(p.date, total));
     }
     return points;
   }
 
-  /// Текущая стоимость портфеля (последняя точка timeline)
-  static double currentPortfolioValue() {
-    final t = portfolioValueTimeline();
-    return t.isEmpty ? 0 : t.last.value;
-  }
-
-  /// Текущий состав портфеля: тикер -> (количество, последняя цена, стоимость позиции)
-  static Map<String, ({double qty, double lastPrice, double value})> currentHoldings() {
-    final purchases = [...StorageService.purchases]..sort((a, b) => a.date.compareTo(b.date));
-    final qty = <String, double>{};
-    final lastPrice = <String, double>{};
-    for (final p in purchases) {
-      qty[p.ticker] = (qty[p.ticker] ?? 0) + p.quantity;
-      lastPrice[p.ticker] = p.pricePerUnit;
-    }
-    final result = <String, ({double qty, double lastPrice, double value})>{};
-    qty.forEach((ticker, q) {
-      if (q <= 0) return;
-      final price = lastPrice[ticker] ?? 0;
-      result[ticker] = (qty: q, lastPrice: price, value: q * price);
-    });
-    return result;
-  }
-
-  /// История цены покупки конкретной бумаги (для графика по тикеру)
-  static List<MapEntry<DateTime, double>> priceHistoryForTicker(String ticker) {
+  static List<({DateTime date, double price, bool isSell})> priceHistoryForTicker(String ticker) {
     final list = StorageService.purchases
         .where((p) => p.ticker == ticker)
-        .map((p) => MapEntry(p.date, p.pricePerUnit))
+        .map((p) => (date: p.date, price: p.pricePerUnit, isSell: p.isSell))
         .toList()
-      ..sort((a, b) => a.key.compareTo(b.key));
+      ..sort((a, b) => a.date.compareTo(b.date));
     return list;
   }
 
-  /// Список всех уникальных тикеров, которые когда-либо покупались
   static List<String> allOwnedTickers() {
     final set = <String>{};
     for (final p in StorageService.purchases) {
@@ -183,5 +233,58 @@ class AnalyticsService {
     }
     final list = set.toList()..sort();
     return list;
+  }
+
+  static double? xirrPercent() {
+    final flows = <MapEntry<DateTime, double>>[];
+
+    for (final p in StorageService.purchases) {
+      final amountRub = CurrencyService.toRub(p.quantity * p.pricePerUnit + p.fee, p.currency);
+      flows.add(MapEntry(p.date, p.isSell ? amountRub : -amountRub));
+    }
+    for (final i in StorageService.incomes) {
+      flows.add(MapEntry(i.date, CurrencyService.toRub(i.amountNet, i.currency)));
+    }
+
+    final currentValue = currentPortfolioValueRub();
+    if (currentValue > 0) {
+      flows.add(MapEntry(DateTime.now(), currentValue));
+    }
+
+    if (flows.length < 2) return null;
+    flows.sort((a, b) => a.key.compareTo(b.key));
+
+    final t0 = flows.first.key;
+    double npv(double rate) {
+      double sum = 0;
+      for (final f in flows) {
+        final years = f.key.difference(t0).inDays / 365.0;
+        final base = 1 + rate;
+        if (base <= 0) return double.nan;
+        sum += f.value / math.pow(base, years);
+      }
+      return sum;
+    }
+
+    double lo = -0.99;
+    double hi = 3.0;
+    double npvLo = npv(lo);
+    final npvHi = npv(hi);
+    if (npvLo.isNaN || npvHi.isNaN) return null;
+    if (npvLo * npvHi > 0) return null;
+
+    double mid = 0;
+    for (int i = 0; i < 60; i++) {
+      mid = (lo + hi) / 2;
+      final npvMid = npv(mid);
+      if (npvMid.abs() < 1e-6) break;
+      if (npvLo * npvMid < 0) {
+        hi = mid;
+      } else {
+        lo = mid;
+        npvLo = npvMid;
+      }
+    }
+    return mid * 100;
   }
 }

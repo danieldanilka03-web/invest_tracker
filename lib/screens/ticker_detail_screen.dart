@@ -21,7 +21,7 @@ class _TickerDetailScreenState extends State<TickerDetailScreen> {
     final history = AnalyticsService.priceHistoryForTicker(ticker);
     final purchases = StorageService.purchases.where((p) => p.ticker == ticker).toList()
       ..sort((a, b) => b.date.compareTo(a.date));
-    final holdings = AnalyticsService.currentHoldings()[ticker];
+    final holding = AnalyticsService.currentHoldings()[ticker];
     final dateFormat = DateFormat('dd.MM.yyyy');
     final name = purchases.isNotEmpty ? purchases.first.name : ticker;
     final isFav = FavoritesService.isFavorite(ticker);
@@ -50,25 +50,48 @@ class _TickerDetailScreenState extends State<TickerDetailScreen> {
         children: [
           Text(name, style: const TextStyle(fontSize: 15, color: Colors.grey)),
           const SizedBox(height: 16),
-          if (holdings != null)
+          if (holding != null) ...[
             Row(
               children: [
                 Expanded(
-                  child: _statCard(context, 'В портфеле', '${holdings.qty.toStringAsFixed(holdings.qty == holdings.qty.roundToDouble() ? 0 : 2)} шт'),
+                  child: _statCard(context, 'В портфеле',
+                      '${holding.qty.toStringAsFixed(holding.qty == holding.qty.roundToDouble() ? 0 : 2)} шт'),
                 ),
                 const SizedBox(width: 10),
                 Expanded(
-                  child: _statCard(context, 'Последняя цена', holdings.lastPrice.toStringAsFixed(2)),
+                  child: _statCard(context, 'Средняя цена', holding.avgCost.toStringAsFixed(2)),
                 ),
                 const SizedBox(width: 10),
                 Expanded(
-                  child: _statCard(context, 'Стоимость', holdings.value.toStringAsFixed(0)),
+                  child: _statCard(context, 'Последняя цена', holding.lastPrice.toStringAsFixed(2)),
                 ),
               ],
             ),
+            const SizedBox(height: 10),
+            Row(
+              children: [
+                Expanded(
+                  child: _statCard(context, 'Стоимость', holding.valueRub.toStringAsFixed(0)),
+                ),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: _statCard(
+                    context,
+                    'Прибыль/убыток',
+                    '${holding.pnlRub >= 0 ? "+" : ""}${holding.pnlRub.toStringAsFixed(0)} (${holding.pnlPct.toStringAsFixed(1)}%)',
+                    valueColor: holding.pnlRub >= 0 ? Colors.green : Colors.red,
+                  ),
+                ),
+              ],
+            ),
+          ] else
+            Padding(
+              padding: const EdgeInsets.symmetric(vertical: 8),
+              child: Text('Эта бумага сейчас не в портфеле (продана полностью)', style: TextStyle(color: Colors.grey.shade500)),
+            ),
           const SizedBox(height: 24),
           if (history.length > 1) ...[
-            const Text('История цены покупки', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+            const Text('История сделок по цене', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
             const SizedBox(height: 12),
             SizedBox(
               height: 200,
@@ -83,13 +106,18 @@ class _TickerDetailScreenState extends State<TickerDetailScreen> {
                   borderData: FlBorderData(show: false),
                   lineBarsData: [
                     LineChartBarData(
-                      spots: [
-                        for (int i = 0; i < history.length; i++) FlSpot(i.toDouble(), history[i].value),
-                      ],
+                      spots: [for (int i = 0; i < history.length; i++) FlSpot(i.toDouble(), history[i].price)],
                       isCurved: true,
                       color: Theme.of(context).colorScheme.primary,
                       barWidth: 3,
-                      dotData: const FlDotData(show: true),
+                      dotData: FlDotData(
+                        show: true,
+                        getDotPainter: (spot, percent, bar, index) => FlDotCirclePainter(
+                          radius: 4,
+                          color: history[index].isSell ? Colors.red : Theme.of(context).colorScheme.primary,
+                          strokeWidth: 0,
+                        ),
+                      ),
                       belowBarData: BarAreaData(
                         show: true,
                         color: Theme.of(context).colorScheme.primary.withOpacity(0.15),
@@ -97,6 +125,20 @@ class _TickerDetailScreenState extends State<TickerDetailScreen> {
                     ),
                   ],
                 ),
+              ),
+            ),
+            Padding(
+              padding: const EdgeInsets.only(top: 8),
+              child: Row(
+                children: [
+                  Container(width: 8, height: 8, decoration: BoxDecoration(shape: BoxShape.circle, color: Theme.of(context).colorScheme.primary)),
+                  const SizedBox(width: 4),
+                  const Text('Покупка', style: TextStyle(fontSize: 11)),
+                  const SizedBox(width: 12),
+                  Container(width: 8, height: 8, decoration: const BoxDecoration(shape: BoxShape.circle, color: Colors.red)),
+                  const SizedBox(width: 4),
+                  const Text('Продажа', style: TextStyle(fontSize: 11)),
+                ],
               ),
             ),
             const SizedBox(height: 24),
@@ -109,9 +151,17 @@ class _TickerDetailScreenState extends State<TickerDetailScreen> {
                 color: Theme.of(context).colorScheme.surfaceContainerLow,
                 margin: const EdgeInsets.symmetric(vertical: 4),
                 child: ListTile(
-                  title: Text('${p.quantity.toStringAsFixed(p.quantity == p.quantity.roundToDouble() ? 0 : 2)} шт × ${p.pricePerUnit}'),
+                  leading: Icon(
+                    p.isSell ? Icons.arrow_upward : Icons.arrow_downward,
+                    color: p.isSell ? Colors.red : Colors.green,
+                  ),
+                  title: Text(
+                      '${p.isSell ? "Продажа" : "Покупка"} • ${p.quantity.toStringAsFixed(p.quantity == p.quantity.roundToDouble() ? 0 : 2)} шт × ${p.pricePerUnit}'),
                   subtitle: Text(dateFormat.format(p.date)),
-                  trailing: Text('${p.total.toStringAsFixed(0)} ${p.currency}'),
+                  trailing: Text(
+                    '${p.isSell ? "+" : "-"}${p.total.toStringAsFixed(0)} ${p.currency}',
+                    style: TextStyle(color: p.isSell ? Colors.red : null, fontWeight: FontWeight.w600),
+                  ),
                 ),
               )),
         ],
@@ -119,7 +169,7 @@ class _TickerDetailScreenState extends State<TickerDetailScreen> {
     );
   }
 
-  Widget _statCard(BuildContext context, String label, String value) {
+  Widget _statCard(BuildContext context, String label, String value, {Color? valueColor}) {
     return Card(
       elevation: 0,
       color: Theme.of(context).colorScheme.surfaceContainerLow,
@@ -131,7 +181,7 @@ class _TickerDetailScreenState extends State<TickerDetailScreen> {
           children: [
             Text(label, style: TextStyle(fontSize: 11, color: Colors.grey.shade500)),
             const SizedBox(height: 4),
-            Text(value, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 15)),
+            Text(value, style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14, color: valueColor)),
           ],
         ),
       ),

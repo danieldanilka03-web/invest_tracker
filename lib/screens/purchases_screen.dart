@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 import 'package:uuid/uuid.dart';
 import '../models/purchase.dart';
+import '../models/plan.dart';
 import '../services/storage_service.dart';
 import '../widgets/ticker_avatar.dart';
 import '../widgets/security_picker_field.dart';
@@ -16,6 +17,7 @@ class PurchasesScreen extends StatefulWidget {
 class _PurchasesScreenState extends State<PurchasesScreen> {
   final _dateFormat = DateFormat('dd.MM.yyyy');
   AssetType? _filterType;
+  bool? _filterIsSell; // null = все, false = только покупки, true = только продажи
 
   String _typeLabel(AssetType t) {
     switch (t) {
@@ -38,11 +40,26 @@ class _PurchasesScreenState extends State<PurchasesScreen> {
     if (_filterType != null) {
       purchases = purchases.where((p) => p.type == _filterType).toList();
     }
+    if (_filterIsSell != null) {
+      purchases = purchases.where((p) => p.isSell == _filterIsSell).toList();
+    }
 
     return Scaffold(
       appBar: AppBar(title: const Text('Покупки')),
       body: Column(
         children: [
+          SizedBox(
+            height: 40,
+            child: ListView(
+              scrollDirection: Axis.horizontal,
+              padding: const EdgeInsets.symmetric(horizontal: 12),
+              children: [
+                _opChip(null, 'Все операции'),
+                _opChip(false, 'Покупки'),
+                _opChip(true, 'Продажи'),
+              ],
+            ),
+          ),
           SizedBox(
             height: 48,
             child: ListView(
@@ -88,15 +105,34 @@ class _PurchasesScreenState extends State<PurchasesScreen> {
                           child: ListTile(
                             contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
                             leading: TickerAvatar(ticker: p.ticker),
-                            title: Text('${p.ticker} · ${p.name}', style: const TextStyle(fontWeight: FontWeight.w600)),
+                            title: Row(
+                              children: [
+                                Expanded(
+                                  child: Text('${p.ticker} · ${p.name}',
+                                      style: const TextStyle(fontWeight: FontWeight.w600), overflow: TextOverflow.ellipsis),
+                                ),
+                                if (p.isSell)
+                                  Container(
+                                    padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                                    decoration: BoxDecoration(
+                                      color: Colors.red.withOpacity(0.12),
+                                      borderRadius: BorderRadius.circular(6),
+                                    ),
+                                    child: const Text('Продажа', style: TextStyle(fontSize: 10, color: Colors.red, fontWeight: FontWeight.bold)),
+                                  ),
+                              ],
+                            ),
                             subtitle: Text(
                               '${_dateFormat.format(p.date)} • ${p.quantity.toStringAsFixed(p.quantity == p.quantity.roundToDouble() ? 0 : 2)} шт × ${p.pricePerUnit}\n'
                               '${_typeLabel(p.type)}${p.sector != null ? ' • ${p.sector}' : ''}',
                             ),
                             isThreeLine: true,
                             trailing: Text(
-                              '${p.total.toStringAsFixed(0)} ${p.currency}',
-                              style: TextStyle(fontWeight: FontWeight.bold, color: Theme.of(context).colorScheme.primary),
+                              '${p.isSell ? "+" : "-"}${p.total.toStringAsFixed(0)} ${p.currency}',
+                              style: TextStyle(
+                                fontWeight: FontWeight.bold,
+                                color: p.isSell ? Colors.red : Theme.of(context).colorScheme.primary,
+                              ),
                             ),
                           ),
                         ),
@@ -112,6 +148,31 @@ class _PurchasesScreenState extends State<PurchasesScreen> {
         label: const Text('Сделка'),
       ),
     );
+  }
+
+  Future<void> _checkPlansForTickers(BuildContext context, Set<String> tickers) async {
+    if (tickers.isEmpty) return;
+    final matchingPlans = StorageService.plans
+        .where((p) => p.status == PlanStatus.active && tickers.contains(p.ticker.toUpperCase()))
+        .toList();
+    for (final plan in matchingPlans) {
+      if (!context.mounted) return;
+      final confirm = await showDialog<bool>(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          title: const Text('Есть активный план'),
+          content: Text('У тебя есть план на покупку ${plan.ticker} — отметить его выполненным?'),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Не сейчас')),
+            FilledButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Отметить выполненным')),
+          ],
+        ),
+      );
+      if (confirm == true) {
+        plan.status = PlanStatus.done;
+        await StorageService.updatePlan(plan);
+      }
+    }
   }
 
   Future<bool> _confirmDelete(BuildContext context) async {
@@ -140,6 +201,18 @@ class _PurchasesScreenState extends State<PurchasesScreen> {
           const SizedBox(height: 4),
           Text('Нажми "Сделка", чтобы добавить одну или несколько бумаг', style: TextStyle(color: Colors.grey.shade400, fontSize: 12)),
         ],
+      ),
+    );
+  }
+
+  Widget _opChip(bool? isSell, String label) {
+    final selected = _filterIsSell == isSell;
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 6),
+      child: ChoiceChip(
+        label: Text(label),
+        selected: selected,
+        onSelected: (_) => setState(() => _filterIsSell = isSell),
       ),
     );
   }
@@ -227,17 +300,19 @@ class _PurchasesScreenState extends State<PurchasesScreen> {
                   ),
                   const SizedBox(height: 12),
                   FilledButton(
-                    onPressed: () {
+                    onPressed: () async {
                       int added = 0;
+                      final addedTickers = <String>{};
                       for (final pos in positions) {
                         final qty = double.tryParse(pos.qtyCtrl.text.replaceAll(',', '.'));
                         final price = double.tryParse(pos.priceCtrl.text.replaceAll(',', '.'));
                         if (pos.tickerCtrl.text.isEmpty || qty == null || price == null) continue;
                         final fee = double.tryParse(pos.feeCtrl.text.replaceAll(',', '.')) ?? 0;
+                        final ticker = pos.tickerCtrl.text.toUpperCase();
                         StorageService.addPurchase(Purchase(
                           id: const Uuid().v4(),
                           date: date,
-                          ticker: pos.tickerCtrl.text.toUpperCase(),
+                          ticker: ticker,
                           name: pos.nameCtrl.text.isEmpty ? pos.tickerCtrl.text : pos.nameCtrl.text,
                           type: pos.type,
                           quantity: qty,
@@ -245,12 +320,19 @@ class _PurchasesScreenState extends State<PurchasesScreen> {
                           fee: fee,
                           currency: pos.currency,
                           sector: pos.sector,
+                          isSell: pos.isSell,
                         ));
                         added++;
+                        if (!pos.isSell) addedTickers.add(ticker);
                       }
                       if (added > 0) {
                         Navigator.pop(ctx);
                         setState(() {});
+                        // Проверяем, нет ли активных планов на купленные тикеры —
+                        // предлагаем сразу отметить их выполненными
+                        if (context.mounted) {
+                          await _checkPlansForTickers(context, addedTickers);
+                        }
                       }
                     },
                     child: Padding(
@@ -278,6 +360,7 @@ class _PositionDraft {
   AssetType type = AssetType.stock;
   String currency = 'RUB';
   String? sector;
+  bool isSell = false;
 }
 
 class _PositionCard extends StatelessWidget {
@@ -337,6 +420,18 @@ class _PositionCard extends StatelessWidget {
                 draft.nameCtrl.text = s.name;
                 draft.type = s.type;
                 draft.sector = s.sector;
+                onChanged();
+              },
+            ),
+            const SizedBox(height: 10),
+            SegmentedButton<bool>(
+              segments: const [
+                ButtonSegment(value: false, label: Text('Покупка'), icon: Icon(Icons.add_shopping_cart, size: 16)),
+                ButtonSegment(value: true, label: Text('Продажа'), icon: Icon(Icons.sell_outlined, size: 16)),
+              ],
+              selected: {draft.isSell},
+              onSelectionChanged: (s) {
+                draft.isSell = s.first;
                 onChanged();
               },
             ),

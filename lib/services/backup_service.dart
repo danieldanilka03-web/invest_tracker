@@ -39,6 +39,7 @@ class BackupService {
                 'currency': p.currency,
                 'note': p.note,
                 'sector': p.sector,
+                'isSell': p.isSell,
               })
           .toList(),
       'incomes': StorageService.incomes
@@ -112,6 +113,7 @@ class BackupService {
         currency: p['currency'] ?? 'RUB',
         note: p['note'],
         sector: p['sector'],
+        isSell: p['isSell'] ?? false,
       ));
       count++;
     }

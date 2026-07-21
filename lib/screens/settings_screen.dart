@@ -1,9 +1,34 @@
 import 'package:flutter/material.dart';
 import '../services/theme_service.dart';
 import '../services/backup_service.dart';
+import '../services/currency_service.dart';
 
-class SettingsScreen extends StatelessWidget {
+class SettingsScreen extends StatefulWidget {
   const SettingsScreen({super.key});
+
+  @override
+  State<SettingsScreen> createState() => _SettingsScreenState();
+}
+
+class _SettingsScreenState extends State<SettingsScreen> {
+  late final Map<String, TextEditingController> _rateCtrls;
+
+  @override
+  void initState() {
+    super.initState();
+    _rateCtrls = {
+      for (final c in CurrencyService.trackedCurrencies)
+        c: TextEditingController(text: CurrencyService.rateFor(c).toStringAsFixed(2)),
+    };
+  }
+
+  @override
+  void dispose() {
+    for (final c in _rateCtrls.values) {
+      c.dispose();
+    }
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -69,6 +94,44 @@ class SettingsScreen extends StatelessWidget {
             ),
           ),
           const SizedBox(height: 32),
+          const Divider(),
+          const SizedBox(height: 16),
+          const Text('Курсы валют', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+          const SizedBox(height: 4),
+          Text(
+            'Приложение офлайн и не тянет котировки из интернета — курсы задаются вручную '
+            'и используются, чтобы сводить статистику по разным валютам в единую сумму (в рублях).',
+            style: TextStyle(color: Colors.grey.shade500, fontSize: 12),
+          ),
+          const SizedBox(height: 12),
+          ...CurrencyService.trackedCurrencies.map((cur) => Padding(
+                padding: const EdgeInsets.only(bottom: 10),
+                child: Row(
+                  children: [
+                    SizedBox(width: 50, child: Text(cur, style: const TextStyle(fontWeight: FontWeight.w600))),
+                    const Text('=', style: TextStyle(color: Colors.grey)),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: TextField(
+                        controller: _rateCtrls[cur],
+                        keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                        decoration: const InputDecoration(
+                          suffixText: '₽',
+                          border: OutlineInputBorder(),
+                          isDense: true,
+                        ),
+                        onChanged: (v) {
+                          final rate = double.tryParse(v.replaceAll(',', '.'));
+                          if (rate != null && rate > 0) {
+                            CurrencyService.setRate(cur, rate);
+                          }
+                        },
+                      ),
+                    ),
+                  ],
+                ),
+              )),
+          const SizedBox(height: 24),
           const Divider(),
           const SizedBox(height: 16),
           const Text('Данные', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
