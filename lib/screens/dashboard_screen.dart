@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:fl_chart/fl_chart.dart';
 import '../services/analytics_service.dart';
+import '../services/favorites_service.dart';
 import '../widgets/ticker_avatar.dart';
 import 'ticker_detail_screen.dart';
 
@@ -176,6 +177,49 @@ class _DashboardScreenState extends State<DashboardScreen> {
 
           const SizedBox(height: 24),
 
+          // --- Избранное ---
+          ValueListenableBuilder<int>(
+            valueListenable: FavoritesService.version,
+            builder: (context, _, __) {
+              final favs = FavoritesService.all;
+              if (favs.isEmpty) return const SizedBox.shrink();
+              return Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Text('Избранное', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+                  const SizedBox(height: 10),
+                  SizedBox(
+                    height: 84,
+                    child: ListView.builder(
+                      scrollDirection: Axis.horizontal,
+                      itemCount: favs.length,
+                      itemBuilder: (context, i) {
+                        final t = favs[i];
+                        return Padding(
+                          padding: const EdgeInsets.only(right: 14),
+                          child: GestureDetector(
+                            onTap: () => Navigator.push(
+                              context,
+                              MaterialPageRoute(builder: (_) => TickerDetailScreen(ticker: t)),
+                            ),
+                            child: Column(
+                              children: [
+                                TickerAvatar(ticker: t, size: 48),
+                                const SizedBox(height: 6),
+                                Text(t, style: const TextStyle(fontSize: 11, fontWeight: FontWeight.w600)),
+                              ],
+                            ),
+                          ),
+                        );
+                      },
+                    ),
+                  ),
+                  const SizedBox(height: 24),
+                ],
+              );
+            },
+          ),
+
           // --- Состав портфеля ---
           if (holdings.isNotEmpty) ...[
             const Text('Состав портфеля', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
@@ -189,9 +233,25 @@ class _DashboardScreenState extends State<DashboardScreen> {
                     leading: TickerAvatar(ticker: e.key, size: 36),
                     title: Text(e.key, style: const TextStyle(fontWeight: FontWeight.w600)),
                     subtitle: Text('${e.value.qty.toStringAsFixed(e.value.qty == e.value.qty.roundToDouble() ? 0 : 2)} шт • по ${e.value.lastPrice}'),
-                    trailing: Text(
-                      e.value.value.toStringAsFixed(0),
-                      style: TextStyle(fontWeight: FontWeight.bold, color: Theme.of(context).colorScheme.primary),
+                    trailing: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Text(
+                          e.value.value.toStringAsFixed(0),
+                          style: TextStyle(fontWeight: FontWeight.bold, color: Theme.of(context).colorScheme.primary),
+                        ),
+                        ValueListenableBuilder<int>(
+                          valueListenable: FavoritesService.version,
+                          builder: (context, _, __) {
+                            final isFav = FavoritesService.isFavorite(e.key);
+                            return IconButton(
+                              icon: Icon(isFav ? Icons.star : Icons.star_border,
+                                  size: 20, color: isFav ? Colors.amber : Colors.grey),
+                              onPressed: () => FavoritesService.toggle(e.key),
+                            );
+                          },
+                        ),
+                      ],
                     ),
                     onTap: () => Navigator.push(
                       context,

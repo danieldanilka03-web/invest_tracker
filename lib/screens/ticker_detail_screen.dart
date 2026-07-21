@@ -3,20 +3,28 @@ import 'package:fl_chart/fl_chart.dart';
 import 'package:intl/intl.dart';
 import '../services/analytics_service.dart';
 import '../services/storage_service.dart';
+import '../services/favorites_service.dart';
 import '../widgets/ticker_avatar.dart';
 
-class TickerDetailScreen extends StatelessWidget {
+class TickerDetailScreen extends StatefulWidget {
   final String ticker;
   const TickerDetailScreen({super.key, required this.ticker});
 
   @override
+  State<TickerDetailScreen> createState() => _TickerDetailScreenState();
+}
+
+class _TickerDetailScreenState extends State<TickerDetailScreen> {
+  @override
   Widget build(BuildContext context) {
+    final ticker = widget.ticker;
     final history = AnalyticsService.priceHistoryForTicker(ticker);
     final purchases = StorageService.purchases.where((p) => p.ticker == ticker).toList()
       ..sort((a, b) => b.date.compareTo(a.date));
     final holdings = AnalyticsService.currentHoldings()[ticker];
     final dateFormat = DateFormat('dd.MM.yyyy');
     final name = purchases.isNotEmpty ? purchases.first.name : ticker;
+    final isFav = FavoritesService.isFavorite(ticker);
 
     return Scaffold(
       appBar: AppBar(
@@ -27,6 +35,15 @@ class TickerDetailScreen extends StatelessWidget {
             Expanded(child: Text(ticker, overflow: TextOverflow.ellipsis)),
           ],
         ),
+        actions: [
+          IconButton(
+            icon: Icon(isFav ? Icons.star : Icons.star_border, color: isFav ? Colors.amber : null),
+            onPressed: () async {
+              await FavoritesService.toggle(ticker);
+              setState(() {});
+            },
+          ),
+        ],
       ),
       body: ListView(
         padding: const EdgeInsets.all(16),

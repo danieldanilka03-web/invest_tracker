@@ -1,12 +1,14 @@
 import 'package:flutter/material.dart';
 import 'services/storage_service.dart';
 import 'services/theme_service.dart';
+import 'services/favorites_service.dart';
 import 'screens/home_screen.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
   await StorageService.init();
   await ThemeService.init();
+  await FavoritesService.init();
   runApp(const InvestTrackerApp());
 }
 
@@ -26,7 +28,7 @@ class InvestTrackerApp extends StatelessWidget {
         elevation: 0,
         scrolledUnderElevation: 0,
       ),
-      cardTheme: CardTheme(
+      cardTheme: CardThemeData(
         elevation: 0,
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
       ),

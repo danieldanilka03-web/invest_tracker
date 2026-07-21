@@ -74,7 +74,25 @@ class _PlansScreenState extends State<PlansScreen> {
                 final isDone = p.status == PlanStatus.done;
                 final isCancelled = p.status == PlanStatus.cancelled;
 
-                return Card(
+                return Dismissible(
+                  key: Key(p.id),
+                  direction: DismissDirection.endToStart,
+                  confirmDismiss: (_) => _confirmDelete(context),
+                  background: Container(
+                    margin: const EdgeInsets.symmetric(horizontal: 4, vertical: 6),
+                    decoration: BoxDecoration(
+                      color: Colors.red.shade400,
+                      borderRadius: BorderRadius.circular(16),
+                    ),
+                    alignment: Alignment.centerRight,
+                    padding: const EdgeInsets.only(right: 20),
+                    child: const Icon(Icons.delete, color: Colors.white),
+                  ),
+                  onDismissed: (_) {
+                    StorageService.deletePlan(p.id);
+                    setState(() {});
+                  },
+                  child: Card(
                   margin: const EdgeInsets.symmetric(horizontal: 4, vertical: 6),
                   elevation: 0,
                   shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
@@ -141,6 +159,7 @@ class _PlansScreenState extends State<PlansScreen> {
                       ],
                     ),
                   ),
+                  ),
                 );
               },
             ),
@@ -149,6 +168,21 @@ class _PlansScreenState extends State<PlansScreen> {
         child: const Icon(Icons.add),
       ),
     );
+  }
+
+  Future<bool> _confirmDelete(BuildContext context) async {
+    return await showDialog<bool>(
+          context: context,
+          builder: (ctx) => AlertDialog(
+            title: const Text('Удалить план?'),
+            content: const Text('Запланированная покупка будет удалена без возможности восстановления.'),
+            actions: [
+              TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Отмена')),
+              FilledButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Удалить')),
+            ],
+          ),
+        ) ??
+        false;
   }
 
   void _showAddDialog(BuildContext context) {

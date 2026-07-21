@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
 import '../data/securities.dart';
+import '../data/security_info.dart';
+import '../services/favorites_service.dart';
 import 'ticker_avatar.dart';
 
 /// Поле выбора бумаги с автокомплитом по встроенному справочнику.
@@ -20,7 +22,15 @@ class SecurityPickerField extends StatelessWidget {
     return Autocomplete<SecurityInfo>(
       displayStringForOption: (s) => '${s.ticker} — ${s.name}',
       optionsBuilder: (textEditingValue) {
-        if (textEditingValue.text.isEmpty) return const Iterable.empty();
+        if (textEditingValue.text.isEmpty) {
+          final favTickers = FavoritesService.all;
+          if (favTickers.isEmpty) return SecuritiesDatabase.search('');
+          final favs = favTickers
+              .map((t) => SecuritiesDatabase.byTicker(t))
+              .whereType<SecurityInfo>()
+              .toList();
+          return favs;
+        }
         return SecuritiesDatabase.search(textEditingValue.text);
       },
       onSelected: onSelected,
@@ -55,7 +65,19 @@ class SecurityPickerField extends StatelessWidget {
                     dense: true,
                     leading: TickerAvatar(ticker: s.ticker, size: 32),
                     title: Text(s.ticker, style: const TextStyle(fontWeight: FontWeight.bold)),
-                    subtitle: Text('${s.name} • ${s.sector}'),
+                    subtitle: Text('${s.name} • ${s.sector.isEmpty ? "Без сектора" : s.sector}'),
+                    trailing: StatefulBuilder(
+                      builder: (context, setInnerState) => IconButton(
+                        icon: Icon(
+                          FavoritesService.isFavorite(s.ticker) ? Icons.star : Icons.star_border,
+                          color: FavoritesService.isFavorite(s.ticker) ? Colors.amber : Colors.grey,
+                        ),
+                        onPressed: () async {
+                          await FavoritesService.toggle(s.ticker);
+                          setInnerState(() {});
+                        },
+                      ),
+                    ),
                     onTap: () => onSelected(s),
                   );
                 },

@@ -1,26 +1,13 @@
 import '../models/purchase.dart';
-
-/// Запись справочника: тикер, название, тип, сектор
-class SecurityInfo {
-  final String ticker;
-  final String name;
-  final AssetType type;
-  final String sector;
-
-  const SecurityInfo({
-    required this.ticker,
-    required this.name,
-    required this.type,
-    required this.sector,
-  });
-}
+import 'security_info.dart';
+import 'securities_generated.dart';
 
 /// Встроенный справочник популярных бумаг Мосбиржи.
 /// Используется для автокомплита при вводе покупок и планов.
 /// Реальных логотипов нет (это чужие товарные знаки) — вместо них
 /// генерируются цветные аватарки с инициалами тикера, см. TickerAvatar.
 class SecuritiesDatabase {
-  static const List<SecurityInfo> all = [
+  static const List<SecurityInfo> _curated = [
     // --- Акции: нефть и газ ---
     SecurityInfo(ticker: 'GAZP', name: 'Газпром', type: AssetType.stock, sector: 'Нефть и газ'),
     SecurityInfo(ticker: 'LKOH', name: 'Лукойл', type: AssetType.stock, sector: 'Нефть и газ'),
@@ -98,12 +85,35 @@ class SecuritiesDatabase {
     SecurityInfo(ticker: 'CNYRUB', name: 'Юань', type: AssetType.currency, sector: 'Валюта'),
   ];
 
+  /// Полный список = отобранные вручную бумаги (с секторами) + полный список
+  /// Мосбиржи (акции, БПИФ и облигации) из выгрузки пользователя.
+  /// При совпадении тикера приоритет у вручную отобранной записи (у неё есть сектор).
+  static late final List<SecurityInfo> all = _mergeAll();
+
+  static List<SecurityInfo> _mergeAll() {
+    final result = <SecurityInfo>[..._curated];
+    final knownTickers = result.map((s) => s.ticker.toUpperCase()).toSet();
+    for (final s in generatedSecurities) {
+      if (knownTickers.contains(s.ticker.toUpperCase())) continue;
+      knownTickers.add(s.ticker.toUpperCase());
+      result.add(s);
+    }
+    return result;
+  }
+
   static List<SecurityInfo> search(String query) {
-    if (query.isEmpty) return all;
+    if (query.isEmpty) return all.take(30).toList();
     final q = query.toLowerCase();
-    return all
+    final matches = all
         .where((s) => s.ticker.toLowerCase().contains(q) || s.name.toLowerCase().contains(q))
         .toList();
+    // сначала точные/близкие совпадения по тикеру, потом остальные
+    matches.sort((a, b) {
+      final aExact = a.ticker.toLowerCase().startsWith(q) ? 0 : 1;
+      final bExact = b.ticker.toLowerCase().startsWith(q) ? 0 : 1;
+      return aExact.compareTo(bExact);
+    });
+    return matches.take(50).toList();
   }
 
   static SecurityInfo? byTicker(String ticker) {
