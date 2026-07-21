@@ -1,0 +1,39 @@
+name: invest_tracker
+description: "Локальный трекер инвестиций: пополнения, покупки, дивиденды, купоны, планы, статистика"
+publish_to: 'none'
+version: 1.0.0+1
+
+environment:
+  sdk: '>=3.3.0 <4.0.0'
+
+dependencies:
+  flutter:
+    sdk: flutter
+  cupertino_icons: ^1.0.6
+
+  # Локальное хранилище (файловое, без БД-сервера)
+  hive: ^2.2.3
+  hive_flutter: ^1.1.0
+
+  # Графики
+  fl_chart: ^0.68.0
+
+  # UI утилиты
+  intl: ^0.19.0
+  uuid: ^4.4.0
+  fluttertoast: ^8.2.5
+
+  # Экспорт/бэкап (JSON файл)
+  path_provider: ^2.1.3
+  share_plus: ^9.0.0
+  file_picker: ^8.0.3
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  hive_generator: ^2.0.1
+  build_runner: ^2.4.9
+  flutter_lints: ^4.0.0
+
+flutter:
+  uses-material-design: true
