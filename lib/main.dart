@@ -26,7 +26,7 @@ class InvestTrackerApp extends StatelessWidget {
         elevation: 0,
         scrolledUnderElevation: 0,
       ),
-      cardTheme: CardThemeData(
+      cardTheme: CardTheme(
         elevation: 0,
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
       ),
