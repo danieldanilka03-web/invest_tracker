@@ -27,8 +27,10 @@ class _TickerDetailScreenState extends State<TickerDetailScreen> {
     final incomes = StorageService.incomes.where((i) => i.ticker == ticker).toList()
       ..sort((a, b) => b.date.compareTo(a.date));
     final incomeTotal = incomes.fold<double>(0, (s, i) => s + i.amountNet);
-    final openLots = AnalyticsService.currentHoldings().containsKey(ticker) ? TaxService.openLotsForTicker(ticker) : <OpenLotInfo>[];
-    final taxBreakdown = TaxService.saleTaxBreakdown();
+    final openLots = (AnalyticsService.currentHoldings().containsKey(ticker) && TaxService.enabled)
+        ? TaxService.openLotsForTicker(ticker)
+        : <OpenLotInfo>[];
+    final taxBreakdown = TaxService.enabled ? TaxService.saleTaxBreakdown() : <String, SaleTaxResult>{};
     final dateFormat = DateFormat('dd.MM.yyyy');
     final name = purchases.isNotEmpty ? purchases.first.name : ticker;
     final isFav = FavoritesService.isFavorite(ticker);

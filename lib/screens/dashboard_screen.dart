@@ -1,6 +1,5 @@
 import 'package:flutter/material.dart';
 import 'package:fl_chart/fl_chart.dart';
-import '../models/income.dart';
 import '../services/analytics_service.dart';
 import '../services/storage_service.dart';
 import '../services/favorites_service.dart';
@@ -18,7 +17,6 @@ class DashboardScreen extends StatefulWidget {
 
 class _DashboardScreenState extends State<DashboardScreen> {
   PeriodFilter _period = PeriodFilter.all;
-  IncomeType? _incomeChartFilter;
   PeriodFilter _incomeChartPeriod = PeriodFilter.year1;
 
   String _periodLabel(PeriodFilter f) {
@@ -49,6 +47,13 @@ class _DashboardScreenState extends State<DashboardScreen> {
 
   @override
   Widget build(BuildContext context) {
+    return ValueListenableBuilder<int>(
+      valueListenable: StorageService.dataVersion,
+      builder: (context, _, __) => _buildContent(context),
+    );
+  }
+
+  Widget _buildContent(BuildContext context) {
     final timeline = AnalyticsService.portfolioValueTimeline();
     final currentValue = AnalyticsService.currentPortfolioValueRub();
     final unrealizedPnl = AnalyticsService.totalUnrealizedPnlRub();
@@ -56,12 +61,12 @@ class _DashboardScreenState extends State<DashboardScreen> {
     final invested = AnalyticsService.totalInvested(f: _period);
     final income = AnalyticsService.totalIncome(f: _period);
     final bySector = AnalyticsService.investedBySector(f: _period);
-    final incomeByMonth = AnalyticsService.incomeByMonth(f: _incomeChartPeriod, type: _incomeChartFilter);
+    final incomeByMonth = AnalyticsService.incomeByMonth(f: _incomeChartPeriod);
     final cashBalance = CashService.balance;
     final concentration = AnalyticsService.topHoldingConcentrationPct();
     final topTicker = AnalyticsService.topHoldingTicker();
     final xirr = AnalyticsService.xirrPercent();
-    final taxDue = TaxService.totalTaxDue();
+    final taxDue = TaxService.enabled ? TaxService.totalTaxDue() : 0.0;
     final primary = Theme.of(context).colorScheme.primary;
 
     // прирост стоимости за отображаемый период (по timeline)
@@ -487,22 +492,6 @@ class _DashboardScreenState extends State<DashboardScreen> {
               runSpacing: 6,
               children: [
                 ChoiceChip(
-                  label: const Text('Всё'),
-                  selected: _incomeChartFilter == null,
-                  onSelected: (_) => setState(() => _incomeChartFilter = null),
-                ),
-                ChoiceChip(
-                  label: const Text('Дивиденды'),
-                  selected: _incomeChartFilter == IncomeType.dividend,
-                  onSelected: (_) => setState(() => _incomeChartFilter = IncomeType.dividend),
-                ),
-                ChoiceChip(
-                  label: const Text('Купоны'),
-                  selected: _incomeChartFilter == IncomeType.coupon,
-                  onSelected: (_) => setState(() => _incomeChartFilter = IncomeType.coupon),
-                ),
-                const SizedBox(width: 8),
-                ChoiceChip(
                   label: const Text('6 мес'),
                   selected: _incomeChartPeriod == PeriodFilter.month6,
                   onSelected: (_) => setState(() => _incomeChartPeriod = PeriodFilter.month6),
@@ -528,48 +517,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                 ),
               )
             else
-              SizedBox(
-                height: 180,
-                child: BarChart(
-                  BarChartData(
-                    gridData: const FlGridData(show: true, drawVerticalLine: false),
-                    borderData: FlBorderData(show: false),
-                    titlesData: FlTitlesData(
-                      topTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)),
-                      rightTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)),
-                      bottomTitles: AxisTitles(
-                        sideTitles: SideTitles(
-                          showTitles: true,
-                          getTitlesWidget: (value, meta) {
-                            final keys = incomeByMonth.keys.toList();
-                            final idx = value.toInt();
-                            if (idx < 0 || idx >= keys.length) return const SizedBox.shrink();
-                            final parts = keys[idx].split('-');
-                            return Padding(
-                              padding: const EdgeInsets.only(top: 4),
-                              child: Text(parts[1], style: const TextStyle(fontSize: 10)),
-                            );
-                          },
-                        ),
-                      ),
-                    ),
-                    barGroups: [
-                      for (int i = 0; i < incomeByMonth.length; i++)
-                        BarChartGroupData(
-                          x: i,
-                          barRods: [
-                            BarChartRodData(
-                              toY: incomeByMonth.values.elementAt(i),
-                              color: Colors.green,
-                              width: 14,
-                              borderRadius: BorderRadius.circular(4),
-                            ),
-                          ],
-                        ),
-                    ],
-                  ),
-                ),
-              ),
+              _buildIncomeLineChart(context, incomeByMonth),
           ],
 
           if (holdings.isEmpty && income == 0)
@@ -592,6 +540,94 @@ class _DashboardScreenState extends State<DashboardScreen> {
         ],
       ),
     );
+  }
+
+  static const _monthNames = [
+    'янв', 'фев', 'мар', 'апр', 'май', 'июн',
+    'июл', 'авг', 'сен', 'окт', 'ноя', 'дек',
+  ];
+
+  String _monthLabel(String key) {
+    final parts = key.split('-');
+    final year = parts[0].substring(2);
+    final month = int.parse(parts[1]);
+    return '${_monthNames[month - 1]} $year';
+  }
+
+  Widget _buildIncomeLineChart(BuildContext context, Map<String, double> data) {
+    final keys = data.keys.toList();
+    final values = data.values.toList();
+    final primary = Theme.of(context).colorScheme.primary;
+    const pointWidth = 64.0;
+    final needsScroll = keys.length > 6;
+    final chartWidth = needsScroll ? keys.length * pointWidth : null;
+
+    Widget chart = SizedBox(
+      height: 200,
+      width: chartWidth,
+      child: LineChart(
+        LineChartData(
+          gridData: const FlGridData(show: true, drawVerticalLine: false),
+          borderData: FlBorderData(show: false),
+          titlesData: FlTitlesData(
+            topTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)),
+            rightTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)),
+            bottomTitles: AxisTitles(
+              sideTitles: SideTitles(
+                showTitles: true,
+                reservedSize: 30,
+                interval: 1,
+                getTitlesWidget: (value, meta) {
+                  final idx = value.toInt();
+                  if (idx < 0 || idx >= keys.length) return const SizedBox.shrink();
+                  return Padding(
+                    padding: const EdgeInsets.only(top: 6),
+                    child: Text(_monthLabel(keys[idx]), style: const TextStyle(fontSize: 10)),
+                  );
+                },
+              ),
+            ),
+          ),
+          lineTouchData: LineTouchData(
+            touchTooltipData: LineTouchTooltipData(
+              getTooltipItems: (spots) => spots.map((s) {
+                return LineTooltipItem(
+                  '${_monthLabel(keys[s.x.toInt()])}\n${values[s.x.toInt()].toStringAsFixed(0)} ₽',
+                  const TextStyle(color: Colors.white, fontSize: 12),
+                );
+              }).toList(),
+            ),
+          ),
+          lineBarsData: [
+            LineChartBarData(
+              spots: [for (int i = 0; i < values.length; i++) FlSpot(i.toDouble(), values[i])],
+              isCurved: true,
+              curveSmoothness: 0.3,
+              color: primary,
+              barWidth: 3,
+              dotData: FlDotData(
+                show: true,
+                getDotPainter: (spot, percent, bar, index) => FlDotCirclePainter(
+                  radius: 3.5,
+                  color: primary,
+                  strokeWidth: 0,
+                ),
+              ),
+              belowBarData: BarAreaData(show: true, color: primary.withOpacity(0.15)),
+            ),
+          ],
+        ),
+      ),
+    );
+
+    if (needsScroll) {
+      chart = SingleChildScrollView(
+        scrollDirection: Axis.horizontal,
+        reverse: true, // сразу открывается на последних (самых свежих) месяцах
+        child: chart,
+      );
+    }
+    return chart;
   }
 
   Future<void> _showEditCashDialog(BuildContext context, double current) async {

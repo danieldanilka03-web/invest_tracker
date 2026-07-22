@@ -45,7 +45,7 @@ class _PurchasesScreenState extends State<PurchasesScreen> {
     if (_filterIsSell != null) {
       purchases = purchases.where((p) => p.isSell == _filterIsSell).toList();
     }
-    final taxBreakdown = TaxService.saleTaxBreakdown();
+    final taxBreakdown = TaxService.enabled ? TaxService.saleTaxBreakdown() : <String, SaleTaxResult>{};
 
     return Scaffold(
       appBar: AppBar(title: const Text('Покупки')),
@@ -300,54 +300,56 @@ class _PurchasesScreenState extends State<PurchasesScreen> {
                       ),
                     ),
                   ),
-                  const SizedBox(height: 8),
-                  OutlinedButton.icon(
-                    onPressed: () => setSheetState(() => positions.add(_PositionDraft())),
-                    icon: const Icon(Icons.add),
-                    label: const Text('Ещё одна бумага'),
-                  ),
-                  const SizedBox(height: 12),
-                  FilledButton(
-                    onPressed: () async {
-                      int added = 0;
-                      final addedTickers = <String>{};
-                      for (final pos in positions) {
-                        final qty = double.tryParse(pos.qtyCtrl.text.replaceAll(',', '.'));
-                        final price = double.tryParse(pos.priceCtrl.text.replaceAll(',', '.'));
-                        if (pos.tickerCtrl.text.isEmpty || qty == null || price == null) continue;
-                        final fee = double.tryParse(pos.feeCtrl.text.replaceAll(',', '.')) ?? 0;
-                        final ticker = pos.tickerCtrl.text.toUpperCase();
-                        StorageService.addPurchase(Purchase(
-                          id: const Uuid().v4(),
-                          date: date,
-                          ticker: ticker,
-                          name: pos.nameCtrl.text.isEmpty ? pos.tickerCtrl.text : pos.nameCtrl.text,
-                          type: pos.type,
-                          quantity: qty,
-                          pricePerUnit: price,
-                          fee: fee,
-                          currency: pos.currency,
-                          sector: pos.sector,
-                          isSell: pos.isSell,
-                        ));
-                        added++;
-                        if (!pos.isSell) addedTickers.add(ticker);
-                      }
-                      if (added > 0) {
-                        Navigator.pop(ctx);
-                        setState(() {});
-                        // Проверяем, нет ли активных планов на купленные тикеры —
-                        // предлагаем сразу отметить их выполненными
-                        if (context.mounted) {
-                          await _checkPlansForTickers(context, addedTickers);
+                  if (keyboardHeight == 0) ...[
+                    const SizedBox(height: 8),
+                    OutlinedButton.icon(
+                      onPressed: () => setSheetState(() => positions.add(_PositionDraft())),
+                      icon: const Icon(Icons.add),
+                      label: const Text('Ещё одна бумага'),
+                    ),
+                    const SizedBox(height: 12),
+                    FilledButton(
+                      onPressed: () async {
+                        int added = 0;
+                        final addedTickers = <String>{};
+                        for (final pos in positions) {
+                          final qty = double.tryParse(pos.qtyCtrl.text.replaceAll(',', '.'));
+                          final price = double.tryParse(pos.priceCtrl.text.replaceAll(',', '.'));
+                          if (pos.tickerCtrl.text.isEmpty || qty == null || price == null) continue;
+                          final fee = double.tryParse(pos.feeCtrl.text.replaceAll(',', '.')) ?? 0;
+                          final ticker = pos.tickerCtrl.text.toUpperCase();
+                          StorageService.addPurchase(Purchase(
+                            id: const Uuid().v4(),
+                            date: date,
+                            ticker: ticker,
+                            name: pos.nameCtrl.text.isEmpty ? pos.tickerCtrl.text : pos.nameCtrl.text,
+                            type: pos.type,
+                            quantity: qty,
+                            pricePerUnit: price,
+                            fee: fee,
+                            currency: pos.currency,
+                            sector: pos.sector,
+                            isSell: pos.isSell,
+                          ));
+                          added++;
+                          if (!pos.isSell) addedTickers.add(ticker);
                         }
-                      }
-                    },
+                        if (added > 0) {
+                          Navigator.pop(ctx);
+                          setState(() {});
+                          // Проверяем, нет ли активных планов на купленные тикеры —
+                          // предлагаем сразу отметить их выполненными
+                          if (context.mounted) {
+                            await _checkPlansForTickers(context, addedTickers);
+                          }
+                        }
+                      },
                     child: Padding(
                       padding: const EdgeInsets.symmetric(vertical: 10),
                       child: Text('Сохранить (${positions.length} ${positions.length == 1 ? "позиция" : "позиции"})'),
                     ),
                   ),
+                  ],
                 ],
               ),
             ),

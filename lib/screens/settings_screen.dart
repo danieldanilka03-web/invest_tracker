@@ -145,13 +145,30 @@ class _SettingsScreenState extends State<SettingsScreen> {
           const SizedBox(height: 12),
           ValueListenableBuilder<int>(
             valueListenable: TaxService.version,
-            builder: (context, _, __) => SegmentedButton<double>(
-              segments: const [
-                ButtonSegment(value: 0.13, label: Text('13%')),
-                ButtonSegment(value: 0.15, label: Text('15%')),
-              ],
-              selected: {TaxService.rate},
-              onSelectionChanged: (s) => TaxService.setRate(s.first),
+            builder: (context, _, __) => SwitchListTile(
+              contentPadding: EdgeInsets.zero,
+              title: const Text('Показывать налог с продаж'),
+              subtitle: const Text('Расчёт НДФЛ и льготы ЛДВ на главной и в деталях бумаги'),
+              value: TaxService.enabled,
+              onChanged: (v) => TaxService.setEnabled(v),
+            ),
+          ),
+          const SizedBox(height: 12),
+          ValueListenableBuilder<int>(
+            valueListenable: TaxService.version,
+            builder: (context, _, __) => Opacity(
+              opacity: TaxService.enabled ? 1 : 0.4,
+              child: IgnorePointer(
+                ignoring: !TaxService.enabled,
+                child: SegmentedButton<double>(
+                  segments: const [
+                    ButtonSegment(value: 0.13, label: Text('13%')),
+                    ButtonSegment(value: 0.15, label: Text('15%')),
+                  ],
+                  selected: {TaxService.rate},
+                  onSelectionChanged: (s) => TaxService.setRate(s.first),
+                ),
+              ),
             ),
           ),
           const SizedBox(height: 24),

@@ -52,7 +52,9 @@ class _MutableLot {
 ///   годовому доходу — задаётся пользователем вручную как одна ставка.
 class TaxService {
   static const boxName = 'tax_settings';
+  static const enabledBoxName = 'tax_enabled';
   static late Box<double> _box;
+  static late Box<bool> _enabledBox;
 
   static final ValueNotifier<int> version = ValueNotifier(0);
 
@@ -60,12 +62,20 @@ class TaxService {
 
   static Future<void> init() async {
     _box = await Hive.openBox<double>(boxName);
+    _enabledBox = await Hive.openBox<bool>(enabledBoxName);
   }
 
   static double get rate => _box.get('rate', defaultValue: 0.13) ?? 0.13;
 
   static Future<void> setRate(double r) async {
     await _box.put('rate', r);
+    version.value++;
+  }
+
+  static bool get enabled => _enabledBox.get('enabled', defaultValue: true) ?? true;
+
+  static Future<void> setEnabled(bool v) async {
+    await _enabledBox.put('enabled', v);
     version.value++;
   }
 
