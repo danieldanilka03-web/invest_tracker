@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import '../services/theme_service.dart';
 import '../services/backup_service.dart';
 import '../services/currency_service.dart';
+import '../services/tax_service.dart';
 
 class SettingsScreen extends StatefulWidget {
   const SettingsScreen({super.key});
@@ -131,6 +132,28 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   ],
                 ),
               )),
+          const SizedBox(height: 24),
+          const Divider(),
+          const SizedBox(height: 16),
+          const Text('Налог с продажи (НДФЛ)', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+          const SizedBox(height: 4),
+          Text(
+            'Ставка применяется к прибыли от продажи бумаг, купленных менее 3 лет назад. '
+            'Владение от 3 лет освобождается от налога (льгота ЛДВ) — упрощённо, без лимита освобождаемой суммы.',
+            style: TextStyle(color: Colors.grey.shade500, fontSize: 12),
+          ),
+          const SizedBox(height: 12),
+          ValueListenableBuilder<int>(
+            valueListenable: TaxService.version,
+            builder: (context, _, __) => SegmentedButton<double>(
+              segments: const [
+                ButtonSegment(value: 0.13, label: Text('13%')),
+                ButtonSegment(value: 0.15, label: Text('15%')),
+              ],
+              selected: {TaxService.rate},
+              onSelectionChanged: (s) => TaxService.setRate(s.first),
+            ),
+          ),
           const SizedBox(height: 24),
           const Divider(),
           const SizedBox(height: 16),

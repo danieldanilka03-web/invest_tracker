@@ -106,9 +106,9 @@ class AnalyticsService {
     return map;
   }
 
-  static Map<String, double> incomeByMonth({PeriodFilter f = PeriodFilter.year1}) {
+  static Map<String, double> incomeByMonth({PeriodFilter f = PeriodFilter.year1, IncomeType? type}) {
     final map = <String, double>{};
-    for (final i in filterIncomes(f)) {
+    for (final i in filterIncomes(f, type: type)) {
       final key = '${i.date.year}-${i.date.month.toString().padLeft(2, '0')}';
       map[key] = (map[key] ?? 0) + CurrencyService.toRub(i.amountNet, i.currency);
     }

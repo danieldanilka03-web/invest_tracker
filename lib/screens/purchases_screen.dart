@@ -4,6 +4,8 @@ import 'package:uuid/uuid.dart';
 import '../models/purchase.dart';
 import '../models/plan.dart';
 import '../services/storage_service.dart';
+import '../services/analytics_service.dart';
+import '../services/tax_service.dart';
 import '../widgets/ticker_avatar.dart';
 import '../widgets/security_picker_field.dart';
 
@@ -43,6 +45,7 @@ class _PurchasesScreenState extends State<PurchasesScreen> {
     if (_filterIsSell != null) {
       purchases = purchases.where((p) => p.isSell == _filterIsSell).toList();
     }
+    final taxBreakdown = TaxService.saleTaxBreakdown();
 
     return Scaffold(
       appBar: AppBar(title: const Text('Покупки')),
@@ -124,7 +127,8 @@ class _PurchasesScreenState extends State<PurchasesScreen> {
                             ),
                             subtitle: Text(
                               '${_dateFormat.format(p.date)} • ${p.quantity.toStringAsFixed(p.quantity == p.quantity.roundToDouble() ? 0 : 2)} шт × ${p.pricePerUnit}\n'
-                              '${_typeLabel(p.type)}${p.sector != null ? ' • ${p.sector}' : ''}',
+                              '${_typeLabel(p.type)}${p.sector != null ? ' • ${p.sector}' : ''}'
+                              '${p.isSell && taxBreakdown[p.id] != null ? _taxSubtitle(taxBreakdown[p.id]!) : ''}',
                             ),
                             isThreeLine: true,
                             trailing: Text(
@@ -190,6 +194,13 @@ class _PurchasesScreenState extends State<PurchasesScreen> {
         false;
   }
 
+  String _taxSubtitle(SaleTaxResult r) {
+    if (r.realizedGainRub <= 0) return ' • без налога (убыток)';
+    if (r.taxableGainRub <= 0 && r.hasLdvPortion) return ' • без налога (ЛДВ)';
+    if (r.taxRub > 0) return ' • налог: ~${r.taxRub.toStringAsFixed(0)} ₽';
+    return '';
+  }
+
   Widget _emptyState() {
     return Center(
       child: Column(
@@ -238,20 +249,18 @@ class _PurchasesScreenState extends State<PurchasesScreen> {
       isScrollControlled: true,
       builder: (ctx) => StatefulBuilder(
         builder: (ctx, setSheetState) {
-          return DraggableScrollableSheet(
-            initialChildSize: 0.85,
-            maxChildSize: 0.95,
-            expand: false,
-            builder: (ctx, scrollController) => Padding(
-              padding: EdgeInsets.only(
-                left: 16,
-                right: 16,
-                top: 16,
-                bottom: MediaQuery.of(ctx).viewInsets.bottom + 16,
-              ),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.stretch,
-                children: [
+          final keyboardHeight = MediaQuery.of(ctx).viewInsets.bottom;
+          final maxSheetHeight = MediaQuery.of(ctx).size.height - keyboardHeight - 60;
+          return Padding(
+            padding: EdgeInsets.only(bottom: keyboardHeight),
+            child: ConstrainedBox(
+              constraints: BoxConstraints(maxHeight: maxSheetHeight > 200 ? maxSheetHeight : 200),
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(16, 16, 16, 16),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
                   Row(
                     children: [
                       const Expanded(
@@ -280,7 +289,6 @@ class _PurchasesScreenState extends State<PurchasesScreen> {
                   const SizedBox(height: 12),
                   Expanded(
                     child: ListView.builder(
-                      controller: scrollController,
                       itemCount: positions.length,
                       itemBuilder: (context, i) => _PositionCard(
                         draft: positions[i],
@@ -343,7 +351,8 @@ class _PurchasesScreenState extends State<PurchasesScreen> {
                 ],
               ),
             ),
-          );
+          ),
+        );
         },
       ),
     );
@@ -435,6 +444,35 @@ class _PositionCard extends StatelessWidget {
                 onChanged();
               },
             ),
+            if (draft.isSell && draft.tickerCtrl.text.isNotEmpty)
+              Padding(
+                padding: const EdgeInsets.only(top: 8),
+                child: Builder(
+                  builder: (context) {
+                    final holding = AnalyticsService.currentHoldings()[draft.tickerCtrl.text.toUpperCase()];
+                    final qty = holding?.qty ?? 0;
+                    return Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                      decoration: BoxDecoration(
+                        color: qty > 0
+                            ? Theme.of(context).colorScheme.primaryContainer.withOpacity(0.5)
+                            : Colors.red.withOpacity(0.1),
+                        borderRadius: BorderRadius.circular(8),
+                      ),
+                      child: Text(
+                        qty > 0
+                            ? 'На счету: ${qty.toStringAsFixed(qty == qty.roundToDouble() ? 0 : 2)} шт'
+                            : 'Этой бумаги нет на счету',
+                        style: TextStyle(
+                          fontSize: 12,
+                          color: qty > 0 ? null : Colors.red,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                    );
+                  },
+                ),
+              ),
             const SizedBox(height: 10),
             Row(
               children: [
@@ -443,6 +481,7 @@ class _PositionCard extends StatelessWidget {
                     controller: draft.tickerCtrl,
                     textCapitalization: TextCapitalization.characters,
                     decoration: const InputDecoration(labelText: 'Тикер', border: OutlineInputBorder(), isDense: true),
+                    onChanged: (_) => onChanged(),
                   ),
                 ),
                 const SizedBox(width: 8),

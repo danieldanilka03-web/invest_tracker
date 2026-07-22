@@ -1,7 +1,11 @@
 import 'package:flutter/material.dart';
 import 'package:fl_chart/fl_chart.dart';
+import '../models/income.dart';
 import '../services/analytics_service.dart';
+import '../services/storage_service.dart';
 import '../services/favorites_service.dart';
+import '../services/cash_service.dart';
+import '../services/tax_service.dart';
 import '../widgets/ticker_avatar.dart';
 import 'ticker_detail_screen.dart';
 
@@ -14,6 +18,8 @@ class DashboardScreen extends StatefulWidget {
 
 class _DashboardScreenState extends State<DashboardScreen> {
   PeriodFilter _period = PeriodFilter.all;
+  IncomeType? _incomeChartFilter;
+  PeriodFilter _incomeChartPeriod = PeriodFilter.year1;
 
   String _periodLabel(PeriodFilter f) {
     switch (f) {
@@ -50,10 +56,12 @@ class _DashboardScreenState extends State<DashboardScreen> {
     final invested = AnalyticsService.totalInvested(f: _period);
     final income = AnalyticsService.totalIncome(f: _period);
     final bySector = AnalyticsService.investedBySector(f: _period);
-    final incomeByMonth = AnalyticsService.incomeByMonth(f: _period == PeriodFilter.all ? PeriodFilter.year1 : _period);
+    final incomeByMonth = AnalyticsService.incomeByMonth(f: _incomeChartPeriod, type: _incomeChartFilter);
+    final cashBalance = CashService.balance;
     final concentration = AnalyticsService.topHoldingConcentrationPct();
     final topTicker = AnalyticsService.topHoldingTicker();
     final xirr = AnalyticsService.xirrPercent();
+    final taxDue = TaxService.totalTaxDue();
     final primary = Theme.of(context).colorScheme.primary;
 
     // прирост стоимости за отображаемый период (по timeline)
@@ -95,8 +103,27 @@ class _DashboardScreenState extends State<DashboardScreen> {
                 const Text('Стоимость портфеля', style: TextStyle(color: Colors.white70, fontSize: 13)),
                 const SizedBox(height: 6),
                 Text(
-                  currentValue.toStringAsFixed(0),
+                  (currentValue + cashBalance).toStringAsFixed(0),
                   style: const TextStyle(color: Colors.white, fontSize: 32, fontWeight: FontWeight.bold),
+                ),
+                Padding(
+                  padding: const EdgeInsets.only(top: 4),
+                  child: GestureDetector(
+                    onTap: () => _showEditCashDialog(context, cashBalance),
+                    child: Row(
+                      children: [
+                        Flexible(
+                          child: Text(
+                            'бумаги: ${currentValue.toStringAsFixed(0)} • свободные: ${cashBalance.toStringAsFixed(0)}',
+                            style: const TextStyle(color: Colors.white70, fontSize: 12),
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        ),
+                        const SizedBox(width: 4),
+                        const Icon(Icons.edit, color: Colors.white70, size: 12),
+                      ],
+                    ),
+                  ),
                 ),
                 if (changeAbs != null && changePct != null)
                   Padding(
@@ -223,6 +250,34 @@ class _DashboardScreenState extends State<DashboardScreen> {
                             fontSize: 15,
                             color: xirr >= 0 ? Colors.green : Colors.red,
                           ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
+          if (taxDue > 0) ...[
+            const SizedBox(height: 10),
+            Container(
+              padding: const EdgeInsets.all(14),
+              decoration: BoxDecoration(
+                color: Theme.of(context).colorScheme.surfaceContainerLow,
+                borderRadius: BorderRadius.circular(16),
+              ),
+              child: Row(
+                children: [
+                  const Icon(Icons.receipt_long, size: 20, color: Colors.orange),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text('Налог с продаж (НДФЛ)', style: TextStyle(fontSize: 11, color: Colors.grey.shade500)),
+                        Text(
+                          '~${taxDue.toStringAsFixed(0)} ₽',
+                          style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 15, color: Colors.orange),
                         ),
                       ],
                     ),
@@ -361,11 +416,12 @@ class _DashboardScreenState extends State<DashboardScreen> {
           if (bySector.isNotEmpty) ...[
             const Text('Распределение по секторам', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
             const SizedBox(height: 12),
-            SizedBox(
-              height: 200,
-              child: Row(
+            Builder(builder: (context) {
+              final total = bySector.values.fold(0.0, (s, v) => s + v);
+              return Column(
                 children: [
-                  Expanded(
+                  SizedBox(
+                    height: 160,
                     child: PieChart(
                       PieChartData(
                         sections: [
@@ -374,100 +430,146 @@ class _DashboardScreenState extends State<DashboardScreen> {
                               value: bySector.values.elementAt(i),
                               color: _sectorColors[i % _sectorColors.length],
                               title: '',
-                              radius: 55,
+                              radius: 50,
                             ),
                         ],
                         sectionsSpace: 2,
-                        centerSpaceRadius: 38,
+                        centerSpaceRadius: 34,
                       ),
                     ),
                   ),
-                  Expanded(
-                    child: SingleChildScrollView(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        mainAxisAlignment: MainAxisAlignment.center,
-                        children: [
-                          for (int i = 0; i < bySector.length; i++)
-                            Padding(
-                              padding: const EdgeInsets.symmetric(vertical: 3),
-                              child: Row(
-                                children: [
-                                  Container(
-                                    width: 10,
-                                    height: 10,
-                                    decoration: BoxDecoration(
-                                      color: _sectorColors[i % _sectorColors.length],
-                                      shape: BoxShape.circle,
-                                    ),
-                                  ),
-                                  const SizedBox(width: 6),
-                                  Expanded(
-                                    child: Text(
-                                      '${bySector.keys.elementAt(i)}: ${bySector.values.elementAt(i).toStringAsFixed(0)}',
-                                      style: const TextStyle(fontSize: 12),
-                                      overflow: TextOverflow.ellipsis,
-                                    ),
-                                  ),
-                                ],
+                  const SizedBox(height: 14),
+                  Wrap(
+                    spacing: 12,
+                    runSpacing: 8,
+                    alignment: WrapAlignment.center,
+                    children: [
+                      for (int i = 0; i < bySector.length; i++)
+                        Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
+                          decoration: BoxDecoration(
+                            color: Theme.of(context).colorScheme.surfaceContainerLow,
+                            borderRadius: BorderRadius.circular(10),
+                          ),
+                          child: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Container(
+                                width: 8,
+                                height: 8,
+                                decoration: BoxDecoration(
+                                  color: _sectorColors[i % _sectorColors.length],
+                                  shape: BoxShape.circle,
+                                ),
                               ),
-                            ),
-                        ],
-                      ),
-                    ),
+                              const SizedBox(width: 6),
+                              Text(
+                                '${bySector.keys.elementAt(i)} ${total > 0 ? (bySector.values.elementAt(i) / total * 100).toStringAsFixed(0) : 0}%',
+                                style: const TextStyle(fontSize: 11, fontWeight: FontWeight.w600),
+                              ),
+                            ],
+                          ),
+                        ),
+                    ],
                   ),
                 ],
-              ),
-            ),
+              );
+            }),
             const SizedBox(height: 24),
           ],
 
           // --- Доход по месяцам ---
-          if (incomeByMonth.isNotEmpty) ...[
+          if (StorageService.incomes.isNotEmpty) ...[
             const Text('Дивиденды и купоны по месяцам', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
-            const SizedBox(height: 12),
-            SizedBox(
-              height: 180,
-              child: BarChart(
-                BarChartData(
-                  gridData: const FlGridData(show: true, drawVerticalLine: false),
-                  borderData: FlBorderData(show: false),
-                  titlesData: FlTitlesData(
-                    topTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)),
-                    rightTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)),
-                    bottomTitles: AxisTitles(
-                      sideTitles: SideTitles(
-                        showTitles: true,
-                        getTitlesWidget: (value, meta) {
-                          final keys = incomeByMonth.keys.toList();
-                          final idx = value.toInt();
-                          if (idx < 0 || idx >= keys.length) return const SizedBox.shrink();
-                          final parts = keys[idx].split('-');
-                          return Padding(
-                            padding: const EdgeInsets.only(top: 4),
-                            child: Text(parts[1], style: const TextStyle(fontSize: 10)),
-                          );
-                        },
+            const SizedBox(height: 10),
+            Wrap(
+              spacing: 8,
+              runSpacing: 6,
+              children: [
+                ChoiceChip(
+                  label: const Text('Всё'),
+                  selected: _incomeChartFilter == null,
+                  onSelected: (_) => setState(() => _incomeChartFilter = null),
+                ),
+                ChoiceChip(
+                  label: const Text('Дивиденды'),
+                  selected: _incomeChartFilter == IncomeType.dividend,
+                  onSelected: (_) => setState(() => _incomeChartFilter = IncomeType.dividend),
+                ),
+                ChoiceChip(
+                  label: const Text('Купоны'),
+                  selected: _incomeChartFilter == IncomeType.coupon,
+                  onSelected: (_) => setState(() => _incomeChartFilter = IncomeType.coupon),
+                ),
+                const SizedBox(width: 8),
+                ChoiceChip(
+                  label: const Text('6 мес'),
+                  selected: _incomeChartPeriod == PeriodFilter.month6,
+                  onSelected: (_) => setState(() => _incomeChartPeriod = PeriodFilter.month6),
+                ),
+                ChoiceChip(
+                  label: const Text('1 год'),
+                  selected: _incomeChartPeriod == PeriodFilter.year1,
+                  onSelected: (_) => setState(() => _incomeChartPeriod = PeriodFilter.year1),
+                ),
+                ChoiceChip(
+                  label: const Text('Всё время'),
+                  selected: _incomeChartPeriod == PeriodFilter.all,
+                  onSelected: (_) => setState(() => _incomeChartPeriod = PeriodFilter.all),
+                ),
+              ],
+            ),
+            const SizedBox(height: 16),
+            if (incomeByMonth.isEmpty)
+              Padding(
+                padding: const EdgeInsets.symmetric(vertical: 24),
+                child: Center(
+                  child: Text('Нет выплат за выбранный период', style: TextStyle(color: Colors.grey.shade500)),
+                ),
+              )
+            else
+              SizedBox(
+                height: 180,
+                child: BarChart(
+                  BarChartData(
+                    gridData: const FlGridData(show: true, drawVerticalLine: false),
+                    borderData: FlBorderData(show: false),
+                    titlesData: FlTitlesData(
+                      topTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)),
+                      rightTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)),
+                      bottomTitles: AxisTitles(
+                        sideTitles: SideTitles(
+                          showTitles: true,
+                          getTitlesWidget: (value, meta) {
+                            final keys = incomeByMonth.keys.toList();
+                            final idx = value.toInt();
+                            if (idx < 0 || idx >= keys.length) return const SizedBox.shrink();
+                            final parts = keys[idx].split('-');
+                            return Padding(
+                              padding: const EdgeInsets.only(top: 4),
+                              child: Text(parts[1], style: const TextStyle(fontSize: 10)),
+                            );
+                          },
+                        ),
                       ),
                     ),
+                    barGroups: [
+                      for (int i = 0; i < incomeByMonth.length; i++)
+                        BarChartGroupData(
+                          x: i,
+                          barRods: [
+                            BarChartRodData(
+                              toY: incomeByMonth.values.elementAt(i),
+                              color: Colors.green,
+                              width: 14,
+                              borderRadius: BorderRadius.circular(4),
+                            ),
+                          ],
+                        ),
+                    ],
                   ),
-                  barGroups: [
-                    for (int i = 0; i < incomeByMonth.length; i++)
-                      BarChartGroupData(
-                        x: i,
-                        barRods: [
-                          BarChartRodData(
-                            toY: incomeByMonth.values.elementAt(i),
-                            color: Colors.green,
-                            width: 14,
-                            borderRadius: BorderRadius.circular(4),
-                          ),
-                        ],
-                      ),
-                  ],
                 ),
               ),
-            ),
           ],
 
           if (holdings.isEmpty && income == 0)
@@ -487,6 +589,45 @@ class _DashboardScreenState extends State<DashboardScreen> {
                 ),
               ),
             ),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _showEditCashDialog(BuildContext context, double current) async {
+    final ctrl = TextEditingController(text: current == 0 ? '' : current.toStringAsFixed(0));
+    await showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Свободные средства'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              'Деньги на счету, которые ещё не вложены в бумаги (например, только что внесённые, или вырученные от продажи).',
+              style: TextStyle(color: Colors.grey.shade500, fontSize: 12),
+            ),
+            const SizedBox(height: 12),
+            TextField(
+              controller: ctrl,
+              keyboardType: const TextInputType.numberWithOptions(decimal: true),
+              autofocus: true,
+              decoration: const InputDecoration(labelText: 'Сумма, ₽', border: OutlineInputBorder()),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Отмена')),
+          FilledButton(
+            onPressed: () async {
+              final value = double.tryParse(ctrl.text.replaceAll(',', '.')) ?? 0;
+              await CashService.setBalance(value);
+              if (ctx.mounted) Navigator.pop(ctx);
+              setState(() {});
+            },
+            child: const Text('Сохранить'),
+          ),
         ],
       ),
     );

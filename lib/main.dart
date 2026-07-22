@@ -3,6 +3,8 @@ import 'services/storage_service.dart';
 import 'services/theme_service.dart';
 import 'services/favorites_service.dart';
 import 'services/currency_service.dart';
+import 'services/cash_service.dart';
+import 'services/tax_service.dart';
 import 'screens/home_screen.dart';
 
 void main() async {
@@ -11,6 +13,8 @@ void main() async {
   await ThemeService.init();
   await FavoritesService.init();
   await CurrencyService.init();
+  await CashService.init();
+  await TaxService.init();
   runApp(const InvestTrackerApp());
 }
 

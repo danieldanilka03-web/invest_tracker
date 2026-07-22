@@ -4,6 +4,8 @@ import 'package:intl/intl.dart';
 import '../services/analytics_service.dart';
 import '../services/storage_service.dart';
 import '../services/favorites_service.dart';
+import '../services/tax_service.dart';
+import '../models/income.dart';
 import '../widgets/ticker_avatar.dart';
 
 class TickerDetailScreen extends StatefulWidget {
@@ -22,6 +24,11 @@ class _TickerDetailScreenState extends State<TickerDetailScreen> {
     final purchases = StorageService.purchases.where((p) => p.ticker == ticker).toList()
       ..sort((a, b) => b.date.compareTo(a.date));
     final holding = AnalyticsService.currentHoldings()[ticker];
+    final incomes = StorageService.incomes.where((i) => i.ticker == ticker).toList()
+      ..sort((a, b) => b.date.compareTo(a.date));
+    final incomeTotal = incomes.fold<double>(0, (s, i) => s + i.amountNet);
+    final openLots = AnalyticsService.currentHoldings().containsKey(ticker) ? TaxService.openLotsForTicker(ticker) : <OpenLotInfo>[];
+    final taxBreakdown = TaxService.saleTaxBreakdown();
     final dateFormat = DateFormat('dd.MM.yyyy');
     final name = purchases.isNotEmpty ? purchases.first.name : ticker;
     final isFav = FavoritesService.isFavorite(ticker);
@@ -89,6 +96,10 @@ class _TickerDetailScreenState extends State<TickerDetailScreen> {
               padding: const EdgeInsets.symmetric(vertical: 8),
               child: Text('Эта бумага сейчас не в портфеле (продана полностью)', style: TextStyle(color: Colors.grey.shade500)),
             ),
+          if (openLots.isNotEmpty) ...[
+            const SizedBox(height: 10),
+            _buildLdvCard(context, openLots),
+          ],
           const SizedBox(height: 24),
           if (history.length > 1) ...[
             const Text('История сделок по цене', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
@@ -143,27 +154,118 @@ class _TickerDetailScreenState extends State<TickerDetailScreen> {
             ),
             const SizedBox(height: 24),
           ],
+          if (incomes.isNotEmpty) ...[
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                const Text('Дивиденды и купоны', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+                Text(
+                  '+${incomeTotal.toStringAsFixed(0)}',
+                  style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.green),
+                ),
+              ],
+            ),
+            const SizedBox(height: 8),
+            ...incomes.map((i) => Card(
+                  elevation: 0,
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+                  color: Theme.of(context).colorScheme.surfaceContainerLow,
+                  margin: const EdgeInsets.symmetric(vertical: 4),
+                  child: ListTile(
+                    leading: Icon(
+                      i.type == IncomeType.dividend ? Icons.trending_up : Icons.receipt_long,
+                      color: Colors.green,
+                    ),
+                    title: Text(i.type == IncomeType.dividend ? 'Дивиденд' : 'Купон'),
+                    subtitle: Text(dateFormat.format(i.date)),
+                    trailing: Text(
+                      '+${i.amountNet.toStringAsFixed(2)} ${i.currency}',
+                      style: const TextStyle(color: Colors.green, fontWeight: FontWeight.w600),
+                    ),
+                  ),
+                )),
+            const SizedBox(height: 24),
+          ],
           const Text('Сделки по этой бумаге', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
           const SizedBox(height: 8),
-          ...purchases.map((p) => Card(
-                elevation: 0,
-                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
-                color: Theme.of(context).colorScheme.surfaceContainerLow,
-                margin: const EdgeInsets.symmetric(vertical: 4),
-                child: ListTile(
-                  leading: Icon(
-                    p.isSell ? Icons.arrow_upward : Icons.arrow_downward,
-                    color: p.isSell ? Colors.red : Colors.green,
-                  ),
-                  title: Text(
-                      '${p.isSell ? "Продажа" : "Покупка"} • ${p.quantity.toStringAsFixed(p.quantity == p.quantity.roundToDouble() ? 0 : 2)} шт × ${p.pricePerUnit}'),
-                  subtitle: Text(dateFormat.format(p.date)),
-                  trailing: Text(
-                    '${p.isSell ? "+" : "-"}${p.total.toStringAsFixed(0)} ${p.currency}',
-                    style: TextStyle(color: p.isSell ? Colors.red : null, fontWeight: FontWeight.w600),
-                  ),
+          ...purchases.map((p) {
+            final tax = p.isSell ? taxBreakdown[p.id] : null;
+            return Card(
+              elevation: 0,
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+              color: Theme.of(context).colorScheme.surfaceContainerLow,
+              margin: const EdgeInsets.symmetric(vertical: 4),
+              child: ListTile(
+                leading: Icon(
+                  p.isSell ? Icons.arrow_upward : Icons.arrow_downward,
+                  color: p.isSell ? Colors.red : Colors.green,
                 ),
-              )),
+                title: Text(
+                    '${p.isSell ? "Продажа" : "Покупка"} • ${p.quantity.toStringAsFixed(p.quantity == p.quantity.roundToDouble() ? 0 : 2)} шт × ${p.pricePerUnit}'),
+                subtitle: Text(
+                  tax != null ? '${dateFormat.format(p.date)}${_taxLine(tax)}' : dateFormat.format(p.date),
+                ),
+                isThreeLine: tax != null && tax.realizedGainRub > 0,
+                trailing: Text(
+                  '${p.isSell ? "+" : "-"}${p.total.toStringAsFixed(0)} ${p.currency}',
+                  style: TextStyle(color: p.isSell ? Colors.red : null, fontWeight: FontWeight.w600),
+                ),
+              ),
+            );
+          }),
+        ],
+      ),
+    );
+  }
+
+  String _taxLine(SaleTaxResult tax) {
+    if (tax.realizedGainRub <= 0) return '\nБез налога (убыток)';
+    if (tax.taxableGainRub <= 0 && tax.hasLdvPortion) return '\nБез налога (ЛДВ)';
+    if (tax.taxRub > 0) return '\nНалог: ~${tax.taxRub.toStringAsFixed(0)} ₽';
+    return '';
+  }
+
+  Widget _buildLdvCard(BuildContext context, List<OpenLotInfo> lots) {
+    final waiting = lots.where((l) => !l.ldvActive).toList();
+    if (waiting.isEmpty) {
+      return Container(
+        padding: const EdgeInsets.all(12),
+        decoration: BoxDecoration(
+          color: Colors.green.withOpacity(0.1),
+          borderRadius: BorderRadius.circular(14),
+        ),
+        child: Row(
+          children: [
+            const Icon(Icons.verified, color: Colors.green, size: 20),
+            const SizedBox(width: 8),
+            const Expanded(
+              child: Text(
+                'Льгота на долгосрочное владение (ЛДВ) уже действует на всю позицию — прибыль с продажи не облагается налогом',
+                style: TextStyle(fontSize: 12, color: Colors.green),
+              ),
+            ),
+          ],
+        ),
+      );
+    }
+    waiting.sort((a, b) => a.daysUntilLdv.compareTo(b.daysUntilLdv));
+    final nearest = waiting.first;
+    return Container(
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: Colors.orange.withOpacity(0.1),
+        borderRadius: BorderRadius.circular(14),
+      ),
+      child: Row(
+        children: [
+          const Icon(Icons.hourglass_bottom, color: Colors.orange, size: 20),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(
+              'До льготы ЛДВ по части позиции (${nearest.qty.toStringAsFixed(nearest.qty == nearest.qty.roundToDouble() ? 0 : 2)} шт) осталось ${nearest.daysUntilLdv} дн.',
+              style: const TextStyle(fontSize: 12, color: Colors.orange),
+            ),
+          ),
         ],
       ),
     );
