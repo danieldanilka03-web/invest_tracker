@@ -3,8 +3,8 @@ import 'package:fl_chart/fl_chart.dart';
 import '../services/analytics_service.dart';
 import '../services/storage_service.dart';
 import '../services/favorites_service.dart';
-import '../services/cash_service.dart';
 import '../services/tax_service.dart';
+import '../services/home_widget_service.dart';
 import '../widgets/ticker_avatar.dart';
 import 'ticker_detail_screen.dart';
 
@@ -18,6 +18,21 @@ class DashboardScreen extends StatefulWidget {
 class _DashboardScreenState extends State<DashboardScreen> {
   PeriodFilter _period = PeriodFilter.all;
   PeriodFilter _incomeChartPeriod = PeriodFilter.year1;
+
+  @override
+  void initState() {
+    super.initState();
+    HomeWidgetService.update();
+    StorageService.dataVersion.addListener(_onDataChanged);
+  }
+
+  @override
+  void dispose() {
+    StorageService.dataVersion.removeListener(_onDataChanged);
+    super.dispose();
+  }
+
+  void _onDataChanged() => HomeWidgetService.update();
 
   String _periodLabel(PeriodFilter f) {
     switch (f) {
@@ -60,9 +75,11 @@ class _DashboardScreenState extends State<DashboardScreen> {
     final holdings = AnalyticsService.currentHoldings();
     final invested = AnalyticsService.totalInvested(f: _period);
     final income = AnalyticsService.totalIncome(f: _period);
-    final bySector = AnalyticsService.investedBySector(f: _period);
+    final totalIncomeAllTime = AnalyticsService.totalIncome(f: PeriodFilter.all);
+    final totalProfit = unrealizedPnl + totalIncomeAllTime;
+    final bySector = AnalyticsService.currentValueBySector();
+    final byTicker = AnalyticsService.currentValueByTicker();
     final incomeByMonth = AnalyticsService.incomeByMonth(f: _incomeChartPeriod);
-    final cashBalance = CashService.balance;
     final concentration = AnalyticsService.topHoldingConcentrationPct();
     final topTicker = AnalyticsService.topHoldingTicker();
     final xirr = AnalyticsService.xirrPercent();
@@ -108,27 +125,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
                 const Text('Стоимость портфеля', style: TextStyle(color: Colors.white70, fontSize: 13)),
                 const SizedBox(height: 6),
                 Text(
-                  (currentValue + cashBalance).toStringAsFixed(0),
+                  currentValue.toStringAsFixed(0),
                   style: const TextStyle(color: Colors.white, fontSize: 32, fontWeight: FontWeight.bold),
-                ),
-                Padding(
-                  padding: const EdgeInsets.only(top: 4),
-                  child: GestureDetector(
-                    onTap: () => _showEditCashDialog(context, cashBalance),
-                    child: Row(
-                      children: [
-                        Flexible(
-                          child: Text(
-                            'бумаги: ${currentValue.toStringAsFixed(0)} • свободные: ${cashBalance.toStringAsFixed(0)}',
-                            style: const TextStyle(color: Colors.white70, fontSize: 12),
-                            overflow: TextOverflow.ellipsis,
-                          ),
-                        ),
-                        const SizedBox(width: 4),
-                        const Icon(Icons.edit, color: Colors.white70, size: 12),
-                      ],
-                    ),
-                  ),
                 ),
                 if (changeAbs != null && changePct != null)
                   Padding(
@@ -149,21 +147,25 @@ class _DashboardScreenState extends State<DashboardScreen> {
                       ],
                     ),
                   ),
-                if (holdings.isNotEmpty)
+                if (holdings.isNotEmpty || totalIncomeAllTime != 0)
                   Padding(
                     padding: const EdgeInsets.only(top: 6),
                     child: Row(
                       children: [
                         Icon(
-                          unrealizedPnl >= 0 ? Icons.arrow_upward : Icons.arrow_downward,
-                          color: Colors.white,
+                          totalProfit >= 0 ? Icons.arrow_upward : Icons.arrow_downward,
+                          color: totalProfit >= 0 ? const Color(0xFF69F0AE) : const Color(0xFFFF8A80),
                           size: 14,
                         ),
                         const SizedBox(width: 4),
                         Flexible(
                           child: Text(
-                            'P&L по открытым позициям: ${unrealizedPnl >= 0 ? "+" : ""}${unrealizedPnl.toStringAsFixed(0)} ₽',
-                            style: const TextStyle(color: Colors.white, fontSize: 12, fontWeight: FontWeight.w500),
+                            'Общая прибыль: ${totalProfit >= 0 ? "+" : ""}${totalProfit.toStringAsFixed(0)} ₽',
+                            style: TextStyle(
+                              color: totalProfit >= 0 ? const Color(0xFF69F0AE) : const Color(0xFFFF8A80),
+                              fontSize: 12,
+                              fontWeight: FontWeight.w600,
+                            ),
                             overflow: TextOverflow.ellipsis,
                           ),
                         ),
@@ -373,7 +375,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                     leading: TickerAvatar(ticker: e.key, size: 36),
                     title: Text(e.key, style: const TextStyle(fontWeight: FontWeight.w600)),
                     subtitle: Text(
-                      '${e.value.qty.toStringAsFixed(e.value.qty == e.value.qty.roundToDouble() ? 0 : 2)} шт • ср. ${e.value.avgCost.toStringAsFixed(2)} → ${e.value.lastPrice.toStringAsFixed(2)}',
+                      '${e.value.qty.toStringAsFixed(e.value.qty == e.value.qty.roundToDouble() ? 0 : 2)} шт • ср. ${e.value.avgCost.toStringAsFixed(2)} → ${e.value.displayPrice.toStringAsFixed(2)}${e.value.hasManualPrice ? " ✎" : ""}',
                     ),
                     trailing: Row(
                       mainAxisSize: MainAxisSize.min,
@@ -417,69 +419,19 @@ class _DashboardScreenState extends State<DashboardScreen> {
             const SizedBox(height: 24),
           ],
 
-          // --- Пирог по секторам ---
+          // --- Пирог по секторам (только текущие бумаги) ---
           if (bySector.isNotEmpty) ...[
             const Text('Распределение по секторам', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
             const SizedBox(height: 12),
-            Builder(builder: (context) {
-              final total = bySector.values.fold(0.0, (s, v) => s + v);
-              return Column(
-                children: [
-                  SizedBox(
-                    height: 160,
-                    child: PieChart(
-                      PieChartData(
-                        sections: [
-                          for (int i = 0; i < bySector.length; i++)
-                            PieChartSectionData(
-                              value: bySector.values.elementAt(i),
-                              color: _sectorColors[i % _sectorColors.length],
-                              title: '',
-                              radius: 50,
-                            ),
-                        ],
-                        sectionsSpace: 2,
-                        centerSpaceRadius: 34,
-                      ),
-                    ),
-                  ),
-                  const SizedBox(height: 14),
-                  Wrap(
-                    spacing: 12,
-                    runSpacing: 8,
-                    alignment: WrapAlignment.center,
-                    children: [
-                      for (int i = 0; i < bySector.length; i++)
-                        Container(
-                          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
-                          decoration: BoxDecoration(
-                            color: Theme.of(context).colorScheme.surfaceContainerLow,
-                            borderRadius: BorderRadius.circular(10),
-                          ),
-                          child: Row(
-                            mainAxisSize: MainAxisSize.min,
-                            children: [
-                              Container(
-                                width: 8,
-                                height: 8,
-                                decoration: BoxDecoration(
-                                  color: _sectorColors[i % _sectorColors.length],
-                                  shape: BoxShape.circle,
-                                ),
-                              ),
-                              const SizedBox(width: 6),
-                              Text(
-                                '${bySector.keys.elementAt(i)} ${total > 0 ? (bySector.values.elementAt(i) / total * 100).toStringAsFixed(0) : 0}%',
-                                style: const TextStyle(fontSize: 11, fontWeight: FontWeight.w600),
-                              ),
-                            ],
-                          ),
-                        ),
-                    ],
-                  ),
-                ],
-              );
-            }),
+            _buildPieWithLegend(context, bySector),
+            const SizedBox(height: 24),
+          ],
+
+          // --- Пирог по отдельным бумагам (только текущие) ---
+          if (byTicker.isNotEmpty) ...[
+            const Text('Распределение по бумагам', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+            const SizedBox(height: 12),
+            _buildPieWithLegend(context, byTicker),
             const SizedBox(height: 24),
           ],
 
@@ -630,42 +582,63 @@ class _DashboardScreenState extends State<DashboardScreen> {
     return chart;
   }
 
-  Future<void> _showEditCashDialog(BuildContext context, double current) async {
-    final ctrl = TextEditingController(text: current == 0 ? '' : current.toStringAsFixed(0));
-    await showDialog(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('Свободные средства'),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
+  Widget _buildPieWithLegend(BuildContext context, Map<String, double> data) {
+    final total = data.values.fold(0.0, (s, v) => s + v);
+    return Column(
+      children: [
+        SizedBox(
+          height: 160,
+          child: PieChart(
+            PieChartData(
+              sections: [
+                for (int i = 0; i < data.length; i++)
+                  PieChartSectionData(
+                    value: data.values.elementAt(i),
+                    color: _sectorColors[i % _sectorColors.length],
+                    title: '',
+                    radius: 50,
+                  ),
+              ],
+              sectionsSpace: 2,
+              centerSpaceRadius: 34,
+            ),
+          ),
+        ),
+        const SizedBox(height: 14),
+        Wrap(
+          spacing: 12,
+          runSpacing: 8,
+          alignment: WrapAlignment.center,
           children: [
-            Text(
-              'Деньги на счету, которые ещё не вложены в бумаги (например, только что внесённые, или вырученные от продажи).',
-              style: TextStyle(color: Colors.grey.shade500, fontSize: 12),
-            ),
-            const SizedBox(height: 12),
-            TextField(
-              controller: ctrl,
-              keyboardType: const TextInputType.numberWithOptions(decimal: true),
-              autofocus: true,
-              decoration: const InputDecoration(labelText: 'Сумма, ₽', border: OutlineInputBorder()),
-            ),
+            for (int i = 0; i < data.length; i++)
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
+                decoration: BoxDecoration(
+                  color: Theme.of(context).colorScheme.surfaceContainerLow,
+                  borderRadius: BorderRadius.circular(10),
+                ),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Container(
+                      width: 8,
+                      height: 8,
+                      decoration: BoxDecoration(
+                        color: _sectorColors[i % _sectorColors.length],
+                        shape: BoxShape.circle,
+                      ),
+                    ),
+                    const SizedBox(width: 6),
+                    Text(
+                      '${data.keys.elementAt(i)} ${total > 0 ? (data.values.elementAt(i) / total * 100).toStringAsFixed(0) : 0}%',
+                      style: const TextStyle(fontSize: 11, fontWeight: FontWeight.w600),
+                    ),
+                  ],
+                ),
+              ),
           ],
         ),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Отмена')),
-          FilledButton(
-            onPressed: () async {
-              final value = double.tryParse(ctrl.text.replaceAll(',', '.')) ?? 0;
-              await CashService.setBalance(value);
-              if (ctx.mounted) Navigator.pop(ctx);
-              setState(() {});
-            },
-            child: const Text('Сохранить'),
-          ),
-        ],
-      ),
+      ],
     );
   }
 

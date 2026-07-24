@@ -1,7 +1,10 @@
+import 'dart:io';
 import 'package:flutter/material.dart';
+import '../services/logo_service.dart';
 
-/// Генерирует стабильный цвет по строке (тикеру), чтобы у одной и той же
-/// бумаги всегда была одинаковая аватарка между запусками приложения.
+/// Показывает загруженный пользователем логотип бумаги, если он есть,
+/// иначе — генерирует стабильную цветную аватарку с инициалами тикера
+/// (одинаковую между запусками приложения для одного и того же тикера).
 class TickerAvatar extends StatelessWidget {
   final String ticker;
   final double size;
@@ -36,6 +39,22 @@ class TickerAvatar extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final logoPath = LogoService.getPath(ticker);
+    if (logoPath != null) {
+      return ClipOval(
+        child: Image.file(
+          File(logoPath),
+          width: size,
+          height: size,
+          fit: BoxFit.cover,
+          errorBuilder: (context, error, stack) => _fallback(),
+        ),
+      );
+    }
+    return _fallback();
+  }
+
+  Widget _fallback() {
     final colors = _gradient;
     return Container(
       width: size,

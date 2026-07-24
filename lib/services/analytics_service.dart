@@ -3,6 +3,8 @@ import '../models/purchase.dart';
 import '../models/income.dart';
 import 'storage_service.dart';
 import 'currency_service.dart';
+import 'manual_price_service.dart';
+import 'sector_service.dart';
 
 /// Фильтр периода для статистики
 enum PeriodFilter { month1, month3, month6, year1, all }
@@ -12,7 +14,9 @@ enum PeriodFilter { month1, month3, month6, year1, all }
 class HoldingInfo {
   final double qty;
   final double avgCost;
-  final double lastPrice;
+  final double lastPrice; // цена последней сделки (покупки/продажи)
+  final double displayPrice; // цена, используемая для оценки стоимости — ручная, если задана, иначе lastPrice
+  final bool hasManualPrice;
   final String currency;
   final double costBasisRub;
   final double valueRub;
@@ -21,6 +25,8 @@ class HoldingInfo {
     required this.qty,
     required this.avgCost,
     required this.lastPrice,
+    required this.displayPrice,
+    required this.hasManualPrice,
     required this.currency,
     required this.costBasisRub,
     required this.valueRub,
@@ -71,7 +77,7 @@ class AnalyticsService {
   static double totalInvested({PeriodFilter f = PeriodFilter.all}) {
     double sum = 0;
     for (final p in filterPurchases(f)) {
-      final amountRub = CurrencyService.toRub(p.quantity * p.pricePerUnit + p.fee, p.currency);
+      final amountRub = CurrencyService.toRub(p.quantity * p.pricePerUnit + p.fee, p.currency, date: p.date);
       sum += p.isSell ? -amountRub : amountRub;
     }
     return sum;
@@ -80,7 +86,7 @@ class AnalyticsService {
   static double totalIncome({PeriodFilter f = PeriodFilter.all}) {
     double sum = 0;
     for (final i in filterIncomes(f)) {
-      sum += CurrencyService.toRub(i.amountNet, i.currency);
+      sum += CurrencyService.toRub(i.amountNet, i.currency, date: i.date);
     }
     return sum;
   }
@@ -88,7 +94,7 @@ class AnalyticsService {
   static Map<AssetType, double> investedByType({PeriodFilter f = PeriodFilter.all}) {
     final map = <AssetType, double>{};
     for (final p in filterPurchases(f)) {
-      final amount = CurrencyService.toRub(p.total, p.currency);
+      final amount = CurrencyService.toRub(p.total, p.currency, date: p.date);
       map[p.type] = (map[p.type] ?? 0) + (p.isSell ? -amount : amount);
     }
     map.removeWhere((_, v) => v <= 0);
@@ -99,7 +105,7 @@ class AnalyticsService {
     final map = <String, double>{};
     for (final p in filterPurchases(f)) {
       final key = p.sector?.isNotEmpty == true ? p.sector! : 'Без сектора';
-      final amount = CurrencyService.toRub(p.total, p.currency);
+      final amount = CurrencyService.toRub(p.total, p.currency, date: p.date);
       map[key] = (map[key] ?? 0) + (p.isSell ? -amount : amount);
     }
     map.removeWhere((_, v) => v <= 0);
@@ -110,7 +116,7 @@ class AnalyticsService {
     final map = <String, double>{};
     for (final i in filterIncomes(f, type: type)) {
       final key = '${i.date.year}-${i.date.month.toString().padLeft(2, '0')}';
-      map[key] = (map[key] ?? 0) + CurrencyService.toRub(i.amountNet, i.currency);
+      map[key] = (map[key] ?? 0) + CurrencyService.toRub(i.amountNet, i.currency, date: i.date);
     }
     return map;
   }
@@ -119,7 +125,8 @@ class AnalyticsService {
     final purchases = [...StorageService.purchases]..sort((a, b) => a.date.compareTo(b.date));
 
     final qty = <String, double>{};
-    final costBasis = <String, double>{};
+    final costBasis = <String, double>{}; // в валюте бумаги — для отображения средней цены
+    final costBasisRub = <String, double>{}; // в рублях, по курсу на дату каждой сделки — для честного P&L
     final lastPrice = <String, double>{};
     final currencyOf = <String, String>{};
 
@@ -127,6 +134,7 @@ class AnalyticsService {
       final t = p.ticker;
       qty.putIfAbsent(t, () => 0);
       costBasis.putIfAbsent(t, () => 0);
+      costBasisRub.putIfAbsent(t, () => 0);
       currencyOf[t] = p.currency;
       lastPrice[t] = p.pricePerUnit;
 
@@ -134,13 +142,17 @@ class AnalyticsService {
         final curQty = qty[t]!;
         if (curQty > 0) {
           final avgCostPerUnit = costBasis[t]! / curQty;
+          final avgCostRubPerUnit = costBasisRub[t]! / curQty;
           final sellQty = p.quantity > curQty ? curQty : p.quantity;
           costBasis[t] = costBasis[t]! - sellQty * avgCostPerUnit;
+          costBasisRub[t] = costBasisRub[t]! - sellQty * avgCostRubPerUnit;
         }
         final newQty = curQty - p.quantity;
         qty[t] = newQty < 0 ? 0 : newQty;
       } else {
         costBasis[t] = costBasis[t]! + p.quantity * p.pricePerUnit + p.fee;
+        costBasisRub[t] = costBasisRub[t]! +
+            CurrencyService.toRub(p.quantity * p.pricePerUnit + p.fee, p.currency, date: p.date);
         qty[t] = qty[t]! + p.quantity;
       }
     }
@@ -150,17 +162,41 @@ class AnalyticsService {
       if (q <= 1e-9) return;
       final cur = currencyOf[ticker] ?? 'RUB';
       final avgCost = costBasis[ticker]! / q;
-      final price = lastPrice[ticker] ?? avgCost;
+      final lastPx = lastPrice[ticker] ?? avgCost;
+      final manualPx = ManualPriceService.get(ticker);
+      final displayPx = manualPx ?? lastPx;
       result[ticker] = HoldingInfo(
         qty: q,
         avgCost: avgCost,
-        lastPrice: price,
+        lastPrice: lastPx,
+        displayPrice: displayPx,
+        hasManualPrice: manualPx != null,
         currency: cur,
-        costBasisRub: CurrencyService.toRub(costBasis[ticker]!, cur),
-        valueRub: CurrencyService.toRub(q * price, cur),
+        costBasisRub: costBasisRub[ticker]!,
+        valueRub: CurrencyService.toRub(q * displayPx, cur), // сегодняшняя оценка — по сегодняшнему курсу
       );
     });
     return result;
+  }
+
+  /// Стоимость текущих (не проданных полностью) позиций по секторам, в рублях.
+  /// Секторы берутся из SectorService (ручная привязка > справочник > "Без сектора").
+  static Map<String, double> currentValueBySector() {
+    final holdings = currentHoldings();
+    final map = <String, double>{};
+    holdings.forEach((ticker, h) {
+      final sector = SectorService.sectorFor(ticker);
+      map[sector] = (map[sector] ?? 0) + h.valueRub;
+    });
+    return map;
+  }
+
+  /// Стоимость текущих позиций по каждой отдельной бумаге, в рублях
+  static Map<String, double> currentValueByTicker() {
+    final holdings = currentHoldings();
+    final map = <String, double>{};
+    holdings.forEach((ticker, h) => map[ticker] = h.valueRub);
+    return map;
   }
 
   static double currentPortfolioValueRub() =>
@@ -210,9 +246,16 @@ class AnalyticsService {
       double total = 0;
       qty.forEach((ticker, q) {
         final price = lastPrice[ticker] ?? 0;
-        total += CurrencyService.toRub(q * price, currencyOf[ticker] ?? 'RUB');
+        total += CurrencyService.toRub(q * price, currencyOf[ticker] ?? 'RUB', date: p.date);
       });
       points.add(MapEntry(p.date, total));
+    }
+
+    // Финальная точка "сегодня" — с учётом ручной цены, если она задана,
+    // чтобы график сходился с реальной текущей стоимостью портфеля.
+    final todayValue = currentPortfolioValueRub();
+    if (points.isEmpty || (todayValue - points.last.value).abs() > 0.5) {
+      points.add(MapEntry(DateTime.now(), todayValue));
     }
     return points;
   }
@@ -239,11 +282,11 @@ class AnalyticsService {
     final flows = <MapEntry<DateTime, double>>[];
 
     for (final p in StorageService.purchases) {
-      final amountRub = CurrencyService.toRub(p.quantity * p.pricePerUnit + p.fee, p.currency);
+      final amountRub = CurrencyService.toRub(p.quantity * p.pricePerUnit + p.fee, p.currency, date: p.date);
       flows.add(MapEntry(p.date, p.isSell ? amountRub : -amountRub));
     }
     for (final i in StorageService.incomes) {
-      flows.add(MapEntry(i.date, CurrencyService.toRub(i.amountNet, i.currency)));
+      flows.add(MapEntry(i.date, CurrencyService.toRub(i.amountNet, i.currency, date: i.date)));
     }
 
     final currentValue = currentPortfolioValueRub();

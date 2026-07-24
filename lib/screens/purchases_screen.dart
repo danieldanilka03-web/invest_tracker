@@ -128,7 +128,8 @@ class _PurchasesScreenState extends State<PurchasesScreen> {
                             subtitle: Text(
                               '${_dateFormat.format(p.date)} • ${p.quantity.toStringAsFixed(p.quantity == p.quantity.roundToDouble() ? 0 : 2)} шт × ${p.pricePerUnit}\n'
                               '${_typeLabel(p.type)}${p.sector != null ? ' • ${p.sector}' : ''}'
-                              '${p.isSell && taxBreakdown[p.id] != null ? _taxSubtitle(taxBreakdown[p.id]!) : ''}',
+                              '${p.isSell && taxBreakdown[p.id] != null ? _taxSubtitle(taxBreakdown[p.id]!) : ''}'
+                              '${p.note?.isNotEmpty == true ? '\n${p.note}' : ''}',
                             ),
                             isThreeLine: true,
                             trailing: Text(
@@ -310,6 +311,39 @@ class _PurchasesScreenState extends State<PurchasesScreen> {
                     const SizedBox(height: 12),
                     FilledButton(
                       onPressed: () async {
+                        // Проверяем, не пытаемся ли продать больше, чем есть в наличии
+                        final sellTotals = <String, double>{};
+                        for (final pos in positions) {
+                          if (!pos.isSell) continue;
+                          final qty = double.tryParse(pos.qtyCtrl.text.replaceAll(',', '.'));
+                          if (pos.tickerCtrl.text.isEmpty || qty == null) continue;
+                          final ticker = pos.tickerCtrl.text.toUpperCase();
+                          sellTotals[ticker] = (sellTotals[ticker] ?? 0) + qty;
+                        }
+                        final problems = <String>[];
+                        sellTotals.forEach((ticker, sellQty) {
+                          final available = AnalyticsService.currentHoldings()[ticker]?.qty ?? 0;
+                          if (sellQty > available + 1e-9) {
+                            final availStr = available.toStringAsFixed(available == available.roundToDouble() ? 0 : 2);
+                            final sellStr = sellQty.toStringAsFixed(sellQty == sellQty.roundToDouble() ? 0 : 2);
+                            problems.add('$ticker: в наличии $availStr шт, продаёшь $sellStr шт');
+                          }
+                        });
+                        if (problems.isNotEmpty) {
+                          final proceed = await showDialog<bool>(
+                            context: ctx,
+                            builder: (dctx) => AlertDialog(
+                              title: const Text('Продажа больше, чем есть'),
+                              content: Text('${problems.join("\n")}\n\nЛишнее количество будет проигнорировано при сохранении. Всё равно продолжить?'),
+                              actions: [
+                                TextButton(onPressed: () => Navigator.pop(dctx, false), child: const Text('Отмена')),
+                                FilledButton(onPressed: () => Navigator.pop(dctx, true), child: const Text('Продолжить')),
+                              ],
+                            ),
+                          );
+                          if (proceed != true) return;
+                        }
+
                         int added = 0;
                         final addedTickers = <String>{};
                         for (final pos in positions) {
@@ -330,6 +364,7 @@ class _PurchasesScreenState extends State<PurchasesScreen> {
                             currency: pos.currency,
                             sector: pos.sector,
                             isSell: pos.isSell,
+                            note: pos.noteCtrl.text.isEmpty ? null : pos.noteCtrl.text,
                           ));
                           added++;
                           if (!pos.isSell) addedTickers.add(ticker);
@@ -368,6 +403,7 @@ class _PositionDraft {
   final qtyCtrl = TextEditingController();
   final priceCtrl = TextEditingController();
   final feeCtrl = TextEditingController(text: '0');
+  final noteCtrl = TextEditingController();
   AssetType type = AssetType.stock;
   String currency = 'RUB';
   String? sector;
@@ -549,6 +585,11 @@ class _PositionCard extends StatelessWidget {
                   ),
                 ),
               ],
+            ),
+            const SizedBox(height: 10),
+            TextField(
+              controller: draft.noteCtrl,
+              decoration: const InputDecoration(labelText: 'Заметка (необязательно)', border: OutlineInputBorder(), isDense: true),
             ),
           ],
         ),

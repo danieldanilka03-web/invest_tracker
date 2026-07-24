@@ -1,10 +1,14 @@
 import 'package:flutter/material.dart';
 import 'package:fl_chart/fl_chart.dart';
 import 'package:intl/intl.dart';
+import 'dart:io';
+import 'package:image_picker/image_picker.dart';
 import '../services/analytics_service.dart';
 import '../services/storage_service.dart';
 import '../services/favorites_service.dart';
 import '../services/tax_service.dart';
+import '../services/manual_price_service.dart';
+import '../services/logo_service.dart';
 import '../models/income.dart';
 import '../widgets/ticker_avatar.dart';
 
@@ -39,7 +43,27 @@ class _TickerDetailScreenState extends State<TickerDetailScreen> {
       appBar: AppBar(
         title: Row(
           children: [
-            TickerAvatar(ticker: ticker, size: 32),
+            GestureDetector(
+              onTap: () => _pickLogo(context, ticker),
+              child: Stack(
+                clipBehavior: Clip.none,
+                children: [
+                  TickerAvatar(ticker: ticker, size: 32),
+                  Positioned(
+                    right: -2,
+                    bottom: -2,
+                    child: Container(
+                      padding: const EdgeInsets.all(2),
+                      decoration: BoxDecoration(
+                        color: Theme.of(context).colorScheme.surface,
+                        shape: BoxShape.circle,
+                      ),
+                      child: Icon(Icons.camera_alt, size: 10, color: Theme.of(context).colorScheme.primary),
+                    ),
+                  ),
+                ],
+              ),
+            ),
             const SizedBox(width: 10),
             Expanded(child: Text(ticker, overflow: TextOverflow.ellipsis)),
           ],
@@ -72,7 +96,15 @@ class _TickerDetailScreenState extends State<TickerDetailScreen> {
                 ),
                 const SizedBox(width: 10),
                 Expanded(
-                  child: _statCard(context, 'Последняя цена', holding.lastPrice.toStringAsFixed(2)),
+                  child: GestureDetector(
+                    onTap: () => _showSetPriceDialog(context, ticker, holding),
+                    child: _statCard(
+                      context,
+                      holding.hasManualPrice ? 'Текущая цена ✎' : 'Последняя цена ✎',
+                      holding.displayPrice.toStringAsFixed(2),
+                      valueColor: holding.hasManualPrice ? Theme.of(context).colorScheme.primary : null,
+                    ),
+                  ),
                 ),
               ],
             ),
@@ -215,6 +247,67 @@ class _TickerDetailScreenState extends State<TickerDetailScreen> {
               ),
             );
           }),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _pickLogo(BuildContext context, String ticker) async {
+    final picker = ImagePicker();
+    final picked = await picker.pickImage(source: ImageSource.gallery, maxWidth: 512, maxHeight: 512);
+    if (picked == null) return;
+    await LogoService.setLogo(ticker, File(picked.path));
+    setState(() {});
+  }
+
+  Future<void> _showSetPriceDialog(BuildContext context, String ticker, HoldingInfo holding) async {
+    final ctrl = TextEditingController(
+      text: holding.hasManualPrice ? holding.displayPrice.toStringAsFixed(2) : '',
+    );
+
+    await showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Текущая цена'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              'Приложение офлайн и не тянет котировки, поэтому по умолчанию используется цена последней сделки. '
+              'Укажи актуальную цену вручную, чтобы стоимость портфеля и графики пересчитались честно.',
+              style: TextStyle(color: Colors.grey.shade500, fontSize: 12),
+            ),
+            const SizedBox(height: 12),
+            TextField(
+              controller: ctrl,
+              autofocus: true,
+              keyboardType: const TextInputType.numberWithOptions(decimal: true),
+              decoration: InputDecoration(labelText: 'Цена, ${holding.currency}', border: const OutlineInputBorder()),
+            ),
+          ],
+        ),
+        actions: [
+          if (holding.hasManualPrice)
+            TextButton(
+              onPressed: () async {
+                await ManualPriceService.clear(ticker);
+                if (ctx.mounted) Navigator.pop(ctx);
+                setState(() {});
+              },
+              child: const Text('Сбросить'),
+            ),
+          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Отмена')),
+          FilledButton(
+            onPressed: () async {
+              final price = double.tryParse(ctrl.text.replaceAll(',', '.'));
+              if (price == null || price <= 0) return;
+              await ManualPriceService.set(ticker, price);
+              if (ctx.mounted) Navigator.pop(ctx);
+              setState(() {});
+            },
+            child: const Text('Сохранить'),
+          ),
         ],
       ),
     );

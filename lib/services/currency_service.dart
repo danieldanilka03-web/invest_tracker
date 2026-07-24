@@ -1,14 +1,27 @@
+import 'dart:convert';
 import 'package:flutter/foundation.dart';
 import 'package:hive_flutter/hive_flutter.dart';
 
-/// Ручные курсы валют к рублю (базовая валюта статистики — RUB).
-/// Курсы не тянутся из интернета (приложение офлайн) — пользователь
-/// вводит их сам в настройках и обновляет по желанию.
-/// Это упрощение: конвертация идёт по текущему введённому курсу,
-/// а не по историческому курсу на дату сделки.
+/// Одна точка истории курса: дата и значение курса к рублю
+class RatePoint {
+  final DateTime date;
+  final double rate;
+  const RatePoint({required this.date, required this.rate});
+
+  Map<String, dynamic> toJson() => {'date': date.toIso8601String(), 'rate': rate};
+  factory RatePoint.fromJson(Map<String, dynamic> j) =>
+      RatePoint(date: DateTime.parse(j['date']), rate: (j['rate'] as num).toDouble());
+}
+
+/// Курсы валют к рублю (базовая валюта статистики — RUB), с историей по датам.
+/// Приложение офлайн и не тянет котировки из интернета — курсы вводятся
+/// пользователем вручную. Каждая сделка конвертируется по курсу, действовавшему
+/// на её дату (ближайший известный курс на эту дату или раньше), а не по
+/// сегодняшнему курсу — так изменение курса в настройках не искажает
+/// задним числом уже случившиеся сделки.
 class CurrencyService {
-  static const boxName = 'currency_rates';
-  static late Box<double> _box;
+  static const boxName = 'currency_rate_history';
+  static late Box<String> _box; // key: currency, value: JSON-массив точек истории
 
   static final ValueNotifier<int> version = ValueNotifier(0);
 
@@ -18,27 +31,74 @@ class CurrencyService {
     'CNY': 12.5,
   };
 
+  static const List<String> trackedCurrencies = ['USD', 'EUR', 'CNY'];
+
   static Future<void> init() async {
-    _box = await Hive.openBox<double>(boxName);
-    for (final e in _defaults.entries) {
-      if (!_box.containsKey(e.key)) {
-        await _box.put(e.key, e.value);
+    _box = await Hive.openBox<String>(boxName);
+    for (final currency in trackedCurrencies) {
+      if (_history(currency).isEmpty) {
+        await _saveHistory(currency, [RatePoint(date: DateTime.now(), rate: _defaults[currency]!)]);
       }
     }
   }
 
-  static double rateFor(String currency) {
-    if (currency == 'RUB') return 1.0;
-    return _box.get(currency, defaultValue: _defaults[currency] ?? 1.0) ?? 1.0;
+  static List<RatePoint> _history(String currency) {
+    final raw = _box.get(currency);
+    if (raw == null) return [];
+    final list = (jsonDecode(raw) as List).cast<Map<String, dynamic>>();
+    return list.map(RatePoint.fromJson).toList()..sort((a, b) => a.date.compareTo(b.date));
   }
 
-  static Future<void> setRate(String currency, double rate) async {
-    await _box.put(currency, rate);
+  static Future<void> _saveHistory(String currency, List<RatePoint> points) async {
+    points.sort((a, b) => a.date.compareTo(b.date));
+    await _box.put(currency, jsonEncode(points.map((p) => p.toJson()).toList()));
+  }
+
+  /// История курса валюты, отсортированная по дате (старые сверху)
+  static List<RatePoint> historyFor(String currency) => _history(currency);
+
+  /// Добавляет/обновляет точку курса на конкретную дату (день). Если точка
+  /// на эту же дату уже есть — перезаписывает её.
+  static Future<void> setRateAt(String currency, DateTime date, double rate) async {
+    final day = DateTime(date.year, date.month, date.day);
+    final points = _history(currency);
+    points.removeWhere((p) => p.date.year == day.year && p.date.month == day.month && p.date.day == day.day);
+    points.add(RatePoint(date: day, rate: rate));
+    await _saveHistory(currency, points);
     version.value++;
   }
 
-  /// Переводит сумму в валюте currency в рубли по сохранённому курсу
-  static double toRub(double amount, String currency) => amount * rateFor(currency);
+  static Future<void> deleteRateAt(String currency, DateTime date) async {
+    final points = _history(currency);
+    points.removeWhere((p) => p.date.year == date.year && p.date.month == date.month && p.date.day == date.day);
+    await _saveHistory(currency, points);
+    version.value++;
+  }
 
-  static List<String> get trackedCurrencies => ['USD', 'EUR', 'CNY'];
+  /// Курс валюты на конкретную дату: ближайшая известная точка на эту дату
+  /// или раньше; если такой нет — самая ранняя известная точка.
+  static double rateFor(String currency, {DateTime? date}) {
+    if (currency == 'RUB') return 1.0;
+    final points = _history(currency);
+    if (points.isEmpty) return _defaults[currency] ?? 1.0;
+    final target = date ?? DateTime.now();
+
+    RatePoint? best;
+    for (final p in points) {
+      if (!p.date.isAfter(target)) {
+        best = p;
+      } else {
+        break;
+      }
+    }
+    return (best ?? points.first).rate;
+  }
+
+  /// Текущий (последний известный) курс — для отображения в настройках
+  static double currentRate(String currency) => rateFor(currency);
+
+  /// Переводит сумму в валюте currency в рубли по курсу на указанную дату
+  /// (по умолчанию — по сегодняшнему курсу, если дата не указана)
+  static double toRub(double amount, String currency, {DateTime? date}) =>
+      amount * rateFor(currency, date: date);
 }

@@ -7,6 +7,9 @@ import '../models/purchase.dart';
 import '../models/income.dart';
 import '../models/plan.dart';
 import 'storage_service.dart';
+import 'sector_service.dart';
+import 'manual_price_service.dart';
+import 'currency_service.dart';
 
 /// Экспорт/импорт всех данных в один JSON-файл.
 /// Так как БД нет, это единственный способ сделать бэкап
@@ -14,7 +17,7 @@ import 'storage_service.dart';
 class BackupService {
   static Future<String> exportToJson() async {
     final data = {
-      'version': 1,
+      'version': 2,
       'exportedAt': DateTime.now().toIso8601String(),
       'deposits': StorageService.deposits
           .map((d) => {
@@ -69,6 +72,13 @@ class BackupService {
                 'createdAt': p.createdAt.toIso8601String(),
               })
           .toList(),
+      'customSectors': SectorService.customSectors,
+      'sectorAssignments': SectorService.allAssignments,
+      'manualPrices': ManualPriceService.all,
+      'currencyRateHistory': {
+        for (final c in CurrencyService.trackedCurrencies)
+          c: CurrencyService.historyFor(c).map((p) => p.toJson()).toList(),
+      },
     };
 
     final jsonStr = const JsonEncoder.withIndent('  ').convert(data);
@@ -82,6 +92,11 @@ class BackupService {
     await Share.shareXFiles([XFile(file.path)], text: 'Бэкап Invest Tracker');
 
     return file.path;
+  }
+
+  static Future<int> importFromFilePath(String path) async {
+    final content = await File(path).readAsString();
+    return importFromJson(content);
   }
 
   static Future<int> importFromJson(String jsonStr) async {
@@ -148,6 +163,32 @@ class BackupService {
         createdAt: DateTime.parse(p['createdAt']),
       ));
       count++;
+    }
+
+    for (final sector in (data['customSectors'] as List? ?? [])) {
+      await SectorService.addSector(sector as String);
+    }
+    final sectorAssignments = (data['sectorAssignments'] as Map?) ?? {};
+    for (final entry in sectorAssignments.entries) {
+      await SectorService.assignSector(entry.key as String, entry.value as String);
+    }
+
+    final manualPrices = (data['manualPrices'] as Map?) ?? {};
+    for (final entry in manualPrices.entries) {
+      await ManualPriceService.set(entry.key as String, (entry.value as num).toDouble());
+    }
+
+    final rateHistory = (data['currencyRateHistory'] as Map?) ?? {};
+    for (final entry in rateHistory.entries) {
+      final currency = entry.key as String;
+      for (final point in (entry.value as List)) {
+        final map = point as Map<String, dynamic>;
+        await CurrencyService.setRateAt(
+          currency,
+          DateTime.parse(map['date']),
+          (map['rate'] as num).toDouble(),
+        );
+      }
     }
 
     return count;

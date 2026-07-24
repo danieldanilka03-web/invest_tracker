@@ -106,7 +106,7 @@ class TaxService {
         final costBasis = take * lot.price;
         final proceeds = take * p.pricePerUnit;
         final gain = proceeds - costBasis;
-        final gainRub = CurrencyService.toRub(gain, p.currency);
+        final gainRub = CurrencyService.toRub(gain, p.currency, date: p.date);
 
         final holdingDays = p.date.difference(lot.date).inDays;
         final isLongTerm = holdingDays >= ldvDays;
