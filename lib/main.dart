@@ -138,7 +138,7 @@ class InvestTrackerApp extends StatelessWidget {
         showDragHandle: true,
         dragHandleColor: scheme.outlineVariant,
       ),
-      dialogTheme: DialogThemeData(
+      dialogTheme: DialogTheme(
         backgroundColor: isDark ? const Color(0xFF141C31) : Colors.white,
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(28)),
         titleTextStyle: TextStyle(color: scheme.onSurface, fontSize: 21, fontWeight: FontWeight.w800),
