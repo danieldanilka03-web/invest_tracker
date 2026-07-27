@@ -6,6 +6,7 @@ import '../models/plan.dart';
 import '../services/storage_service.dart';
 import '../services/analytics_service.dart';
 import '../services/tax_service.dart';
+import '../services/manual_price_service.dart';
 import '../widgets/ticker_avatar.dart';
 import '../widgets/security_picker_field.dart';
 
@@ -20,6 +21,24 @@ class _PurchasesScreenState extends State<PurchasesScreen> {
   final _dateFormat = DateFormat('dd.MM.yyyy');
   AssetType? _filterType;
   bool? _filterIsSell; // null = все, false = только покупки, true = только продажи
+
+  @override
+  void initState() {
+    super.initState();
+    // Экран живёт в IndexedStack и не пересоздаётся при переключении вкладок,
+    // поэтому переключение портфеля (сделанное на экране "Настройки") без
+    // этого слушателя не обновило бы список — данные читаются заново из
+    // уже переоткрытых боксов только при перерисовке.
+    StorageService.dataVersion.addListener(_onDataChanged);
+  }
+
+  @override
+  void dispose() {
+    StorageService.dataVersion.removeListener(_onDataChanged);
+    super.dispose();
+  }
+
+  void _onDataChanged() => setState(() {});
 
   String _typeLabel(AssetType t) {
     switch (t) {
@@ -48,11 +67,11 @@ class _PurchasesScreenState extends State<PurchasesScreen> {
     final taxBreakdown = TaxService.enabled ? TaxService.saleTaxBreakdown() : <String, SaleTaxResult>{};
 
     return Scaffold(
-      appBar: AppBar(title: const Text('Покупки')),
+      appBar: AppBar(title: const Text('Сделки')),
       body: Column(
         children: [
           SizedBox(
-            height: 40,
+            height: 48,
             child: ListView(
               scrollDirection: Axis.horizontal,
               padding: const EdgeInsets.symmetric(horizontal: 12),
@@ -78,7 +97,7 @@ class _PurchasesScreenState extends State<PurchasesScreen> {
             child: purchases.isEmpty
                 ? _emptyState()
                 : ListView.builder(
-                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                    padding: const EdgeInsets.fromLTRB(12, 6, 12, 96),
                     itemCount: purchases.length,
                     itemBuilder: (context, i) {
                       final p = purchases[i];
@@ -101,9 +120,9 @@ class _PurchasesScreenState extends State<PurchasesScreen> {
                           setState(() {});
                         },
                         child: Card(
-                          margin: const EdgeInsets.symmetric(vertical: 4, horizontal: 4),
+                          margin: const EdgeInsets.symmetric(vertical: 5, horizontal: 4),
                           elevation: 0,
-                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
                           color: Theme.of(context).colorScheme.surfaceContainerLow,
                           child: ListTile(
                             contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
@@ -366,6 +385,12 @@ class _PurchasesScreenState extends State<PurchasesScreen> {
                             isSell: pos.isSell,
                             note: pos.noteCtrl.text.isEmpty ? null : pos.noteCtrl.text,
                           ));
+                          // Цена сделки — это реальное наблюдение цены на эту дату,
+                          // поэтому сразу фиксируем её и в историю ручных цен (как
+                          // будто пользователь сам ввёл цену на эту дату). Если позже
+                          // добавится более новая ручная/сделочная цена — эта точка
+                          // останется в истории, но перестанет быть "текущей".
+                          ManualPriceService.setAt(ticker, date, price);
                           added++;
                           if (!pos.isSell) addedTickers.add(ticker);
                         }

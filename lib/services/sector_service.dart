@@ -2,20 +2,38 @@ import 'dart:convert';
 import 'package:flutter/foundation.dart';
 import 'package:hive_flutter/hive_flutter.dart';
 import '../data/securities.dart';
+import 'portfolio_service.dart';
 
 /// Пользовательские секторы и привязка ценных бумаг к ним.
 /// У одной бумаги может быть только один сектор. Если бумага не привязана
 /// вручную, используется сектор из встроенного справочника (если есть),
 /// иначе — "Без сектора".
+///
+/// Хранится отдельно на каждый портфель (см. PortfolioService) — у портфеля
+/// по умолчанию бокс без суффикса (старые данные не мигрируют).
 class SectorService {
-  static const boxName = 'sectors';
   static const _listKey = '_custom_list';
   static late Box<String> _box; // _custom_list -> JSON-массив имён секторов; TICKER -> имя сектора
 
   static final ValueNotifier<int> version = ValueNotifier(0);
 
+  static String _boxName(String portfolioId) =>
+      portfolioId == PortfolioService.defaultId ? 'sectors' : 'sectors_$portfolioId';
+
   static Future<void> init() async {
-    _box = await Hive.openBox<String>(boxName);
+    _box = await Hive.openBox<String>(_boxName(PortfolioService.activeId));
+  }
+
+  /// Вызывается PortfolioService при переключении портфеля.
+  static Future<void> reopenBoxFor(String portfolioId) async {
+    await _box.close();
+    _box = await Hive.openBox<String>(_boxName(portfolioId));
+    version.value++;
+  }
+
+  /// Удаляет с диска бокс секторов указанного портфеля.
+  static Future<void> deleteBoxFor(String portfolioId) async {
+    await Hive.deleteBoxFromDisk(_boxName(portfolioId));
   }
 
   static List<String> get customSectors {

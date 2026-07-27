@@ -18,6 +18,20 @@ class _IncomesScreenState extends State<IncomesScreen> {
   IncomeType? _filterType;
 
   @override
+  void initState() {
+    super.initState();
+    StorageService.dataVersion.addListener(_onDataChanged);
+  }
+
+  @override
+  void dispose() {
+    StorageService.dataVersion.removeListener(_onDataChanged);
+    super.dispose();
+  }
+
+  void _onDataChanged() => setState(() {});
+
+  @override
   Widget build(BuildContext context) {
     var incomes = StorageService.incomes..sort((a, b) => b.date.compareTo(a.date));
     if (_filterType != null) {
@@ -30,19 +44,32 @@ class _IncomesScreenState extends State<IncomesScreen> {
       body: Column(
         children: [
           Padding(
-            padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
-            child: Card(
-              color: Theme.of(context).colorScheme.secondaryContainer,
-              child: Padding(
-                padding: const EdgeInsets.all(16),
+            padding: const EdgeInsets.fromLTRB(16, 8, 16, 12),
+            child: TweenAnimationBuilder<double>(
+              duration: const Duration(milliseconds: 750),
+              curve: Curves.easeOutCubic,
+              tween: Tween(begin: 0, end: total),
+              builder: (context, value, _) => Container(
+                padding: const EdgeInsets.all(20),
+                decoration: BoxDecoration(
+                  borderRadius: BorderRadius.circular(26),
+                  gradient: LinearGradient(colors: [const Color(0xFF0F3A34), Theme.of(context).colorScheme.secondary]),
+                  boxShadow: [BoxShadow(color: Theme.of(context).colorScheme.secondary.withOpacity(.24), blurRadius: 24, offset: const Offset(0, 10))],
+                ),
                 child: Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
                   children: [
-                    const Text('Получено (после налога)'),
-                    Text(
-                      total.toStringAsFixed(2),
-                      style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 18),
+                    Container(
+                      width: 46,
+                      height: 46,
+                      decoration: BoxDecoration(color: Colors.white.withOpacity(.14), borderRadius: BorderRadius.circular(15)),
+                      child: const Icon(Icons.savings_outlined, color: Colors.white),
                     ),
+                    const SizedBox(width: 14),
+                    Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                      const Text('ПОЛУЧЕНО ПОСЛЕ НАЛОГА', style: TextStyle(color: Colors.white70, fontWeight: FontWeight.w700, letterSpacing: .8, fontSize: 10)),
+                      const SizedBox(height: 4),
+                      Text('${value.toStringAsFixed(0)} ₽', style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w800, fontSize: 27, letterSpacing: -.8)),
+                    ])),
                   ],
                 ),
               ),
@@ -73,8 +100,15 @@ class _IncomesScreenState extends State<IncomesScreen> {
           const SizedBox(height: 8),
           Expanded(
             child: incomes.isEmpty
-                ? const Center(child: Text('Пока нет выплат'))
+                ? Center(child: Column(mainAxisSize: MainAxisSize.min, children: [
+                    Icon(Icons.savings_outlined, size: 54, color: Theme.of(context).colorScheme.primary.withOpacity(.45)),
+                    const SizedBox(height: 12),
+                    const Text('Пока нет выплат', style: TextStyle(fontWeight: FontWeight.w700)),
+                    const SizedBox(height: 4),
+                    Text('Добавьте первую выплату по активу', style: TextStyle(color: Colors.grey.shade500, fontSize: 12)),
+                  ]))
                 : ListView.builder(
+                    padding: const EdgeInsets.fromLTRB(12, 4, 12, 96),
                     itemCount: incomes.length,
                     itemBuilder: (context, i) {
                       final inc = incomes[i];
@@ -93,8 +127,8 @@ class _IncomesScreenState extends State<IncomesScreen> {
                         },
                         child: Card(
                           elevation: 0,
-                          margin: const EdgeInsets.symmetric(vertical: 4, horizontal: 4),
-                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+                          margin: const EdgeInsets.symmetric(vertical: 5, horizontal: 4),
+                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
                           color: Theme.of(context).colorScheme.surfaceContainerLow,
                           child: ListTile(
                             leading: TickerAvatar(ticker: inc.ticker),
@@ -116,9 +150,10 @@ class _IncomesScreenState extends State<IncomesScreen> {
           ),
         ],
       ),
-      floatingActionButton: FloatingActionButton(
+      floatingActionButton: FloatingActionButton.extended(
         onPressed: () => _showAddDialog(context),
-        child: const Icon(Icons.add),
+        icon: const Icon(Icons.add_rounded),
+        label: const Text('Выплата'),
       ),
     );
   }

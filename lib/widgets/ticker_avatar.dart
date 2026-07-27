@@ -39,19 +39,27 @@ class TickerAvatar extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final logoPath = LogoService.getPath(ticker);
-    if (logoPath != null) {
-      return ClipOval(
-        child: Image.file(
-          File(logoPath),
-          width: size,
-          height: size,
-          fit: BoxFit.cover,
-          errorBuilder: (context, error, stack) => _fallback(),
-        ),
-      );
-    }
-    return _fallback();
+    // Слушаем LogoService.version, чтобы аватарка перерисовывалась сама —
+    // на ЛЮБОМ экране, где она используется — сразу, как только логотип
+    // где-то изменили/удалили, без необходимости заходить на этот экран заново.
+    return ValueListenableBuilder<int>(
+      valueListenable: LogoService.version,
+      builder: (context, _, __) {
+        final logoPath = LogoService.getPath(ticker);
+        if (logoPath != null) {
+          return ClipOval(
+            child: Image.file(
+              File(logoPath),
+              width: size,
+              height: size,
+              fit: BoxFit.cover,
+              errorBuilder: (context, error, stack) => _fallback(),
+            ),
+          );
+        }
+        return _fallback();
+      },
+    );
   }
 
   Widget _fallback() {

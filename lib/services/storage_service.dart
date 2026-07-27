@@ -4,29 +4,36 @@ import '../models/deposit.dart';
 import '../models/purchase.dart';
 import '../models/income.dart';
 import '../models/plan.dart';
+import 'portfolio_service.dart';
 
 /// Единая точка доступа к локальному хранилищу.
 /// Всё хранится в файлах Hive на диске устройства — без БД-сервера,
 /// без интернета, полностью офлайн.
+///
+/// Данные (сделки/доходы/пополнения/планы) физически разложены по разным
+/// Hive-боксам в зависимости от активного портфеля (см. PortfolioService):
+/// у портфеля по умолчанию (id == PortfolioService.defaultId) боксы — без
+/// суффикса, это те же боксы, что были всегда, поэтому у пользователей,
+/// обновившихся со старой версии (когда портфелей ещё не было), ничего не
+/// теряется и не требует миграции. У остальных портфелей — суффикс "_<id>".
 class StorageService {
-  static const depositsBoxName = 'deposits';
-  static const purchasesBoxName = 'purchases';
-  static const incomesBoxName = 'incomes';
-  static const plansBoxName = 'plans';
-
   static late Box<Deposit> depositsBox;
   static late Box<Purchase> purchasesBox;
   static late Box<Income> incomesBox;
   static late Box<Plan> plansBox;
 
-  /// Увеличивается при любом изменении данных (покупка, продажа, доход, план).
+  /// Увеличивается при любом изменении данных (покупка, продажа, доход,
+  /// план), а также при переключении портфеля.
   /// Экраны вроде дашборда слушают это значение через ValueListenableBuilder,
   /// чтобы автоматически перечитывать статистику без ручного refresh.
   static final ValueNotifier<int> dataVersion = ValueNotifier(0);
 
-  static Future<void> init() async {
-    await Hive.initFlutter();
+  static String _suffix(String portfolioId) =>
+      portfolioId == PortfolioService.defaultId ? '' : '_$portfolioId';
 
+  /// Регистрирует Hive-адаптеры моделей. Вызывается один раз при старте,
+  /// до PortfolioService.init() и до открытия боксов.
+  static void registerAdapters() {
     Hive.registerAdapter(DepositAdapter());
     Hive.registerAdapter(AssetTypeAdapter());
     Hive.registerAdapter(PurchaseAdapter());
@@ -34,11 +41,63 @@ class StorageService {
     Hive.registerAdapter(IncomeAdapter());
     Hive.registerAdapter(PlanStatusAdapter());
     Hive.registerAdapter(PlanAdapter());
+  }
 
-    depositsBox = await Hive.openBox<Deposit>(depositsBoxName);
-    purchasesBox = await Hive.openBox<Purchase>(purchasesBoxName);
-    incomesBox = await Hive.openBox<Income>(incomesBoxName);
-    plansBox = await Hive.openBox<Plan>(plansBoxName);
+  static Future<void> init() async {
+    await _openBoxesFor(PortfolioService.activeId);
+  }
+
+  static Future<void> _openBoxesFor(String portfolioId) async {
+    final s = _suffix(portfolioId);
+    depositsBox = await Hive.openBox<Deposit>('deposits$s');
+    purchasesBox = await Hive.openBox<Purchase>('purchases$s');
+    incomesBox = await Hive.openBox<Income>('incomes$s');
+    plansBox = await Hive.openBox<Plan>('plans$s');
+  }
+
+  /// Вызывается PortfolioService при переключении активного портфеля:
+  /// закрывает текущие боксы и открывает боксы нужного портфеля (создаются
+  /// пустыми, если для этого портфеля их ещё не было).
+  static Future<void> reopenBoxesFor(String portfolioId) async {
+    await depositsBox.close();
+    await purchasesBox.close();
+    await incomesBox.close();
+    await plansBox.close();
+    await _openBoxesFor(portfolioId);
+    _bump();
+  }
+
+  /// Удаляет с диска боксы указанного портфеля — используется при удалении
+  /// портфеля целиком. Вызывается ПОСЛЕ того, как активный портфель уже
+  /// переключён на другой (иначе удалили бы то, что сейчас открыто).
+  static Future<void> deleteBoxesFor(String portfolioId) async {
+    final s = _suffix(portfolioId);
+    await Hive.deleteBoxFromDisk('deposits$s');
+    await Hive.deleteBoxFromDisk('purchases$s');
+    await Hive.deleteBoxFromDisk('incomes$s');
+    await Hive.deleteBoxFromDisk('plans$s');
+  }
+
+  /// Читает сделки и доходы указанного портфеля, НЕ трогая текущие активные
+  /// боксы (depositsBox/purchasesBox/...) и не переключая активный портфель.
+  /// Для активного портфеля просто возвращает уже загруженные данные. Для
+  /// остальных — открывает их боксы отдельно и сразу закрывает после чтения
+  /// (иначе они оставались бы висеть открытыми до конца жизни приложения).
+  /// Используется страницей со списком портфелей, чтобы посчитать
+  /// стоимость/прибыль КАЖДОГО портфеля, включая неактивные сейчас.
+  static Future<({List<Purchase> purchases, List<Income> incomes})> readDataFor(
+    String portfolioId,
+  ) async {
+    if (portfolioId == PortfolioService.activeId) {
+      return (purchases: purchases, incomes: incomes);
+    }
+    final s = _suffix(portfolioId);
+    final pBox = await Hive.openBox<Purchase>('purchases$s');
+    final iBox = await Hive.openBox<Income>('incomes$s');
+    final result = (purchases: pBox.values.toList(), incomes: iBox.values.toList());
+    await pBox.close();
+    await iBox.close();
+    return result;
   }
 
   static void _bump() => dataVersion.value++;

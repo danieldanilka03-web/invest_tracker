@@ -36,6 +36,41 @@ class HoldingInfo {
   double get pnlPct => costBasisRub == 0 ? 0 : (pnlRub / costBasisRub) * 100;
 }
 
+/// Изменение стоимости "замороженного" на начало периода состава портфеля:
+/// берём тикеры и количество, которые были на начало периода, и сравниваем
+/// их оценку по ценам на тот момент и по сегодняшним ценам. Покупки/продажи,
+/// сделанные ВНУТРИ периода, на это число не влияют — это чистая переоценка.
+class PeriodChange {
+  final double valueStart;
+  final double valueEnd;
+  final double changeAbs;
+  final double changePct;
+
+  const PeriodChange({
+    required this.valueStart,
+    required this.valueEnd,
+    required this.changeAbs,
+    required this.changePct,
+  });
+}
+
+/// Проекция дохода по бумаге на ближайшие 12 мес — по факту фактических
+/// выплат за прошлые 365 дней, приведённая к сегодняшнему количеству. Не
+/// гарантия: реальные будущие выплаты могут быть как выше, так и ниже.
+class DividendForecast {
+  final String ticker;
+  final double last12mRub; // прогноз в рублях на след. 12 мес
+  final double yieldPct; // = last12mRub / текущая стоимость позиции * 100
+  final bool hasHistory; // были ли вообще выплаты за последние 365 дней
+
+  const DividendForecast({
+    required this.ticker,
+    required this.last12mRub,
+    required this.yieldPct,
+    required this.hasHistory,
+  });
+}
+
 class AnalyticsService {
   static DateTime? _periodStart(PeriodFilter f) {
     final now = DateTime.now();
@@ -179,6 +214,51 @@ class AnalyticsService {
     return result;
   }
 
+  /// Реализованная прибыль/убыток по всем продажам за всё время — то, что
+  /// НЕ входит в totalUnrealizedPnlRub (он считается только по открытым
+  /// сейчас позициям). Метод учёта — средняя цена входа на момент продажи,
+  /// тот же, что и в currentHoldings(), чтобы реализованная и нереализованная
+  /// прибыль честно складывались в одну "Общую прибыль".
+  ///
+  /// Отдельно от TaxService: там для расчёта налога/ЛДВ используется FIFO по
+  /// лотам (это важно для корректного налогового учёта), поэтому число здесь
+  /// может немного отличаться от "реализованного результата" в налоговом
+  /// разделе — оба варианта корректны, это просто два разных метода учёта.
+  static double totalRealizedPnlRub() {
+    final purchases = [...StorageService.purchases]..sort((a, b) => a.date.compareTo(b.date));
+
+    final qty = <String, double>{};
+    final costBasisRub = <String, double>{};
+    double realizedRub = 0;
+
+    for (final p in purchases) {
+      final t = p.ticker;
+      qty.putIfAbsent(t, () => 0);
+      costBasisRub.putIfAbsent(t, () => 0);
+
+      if (p.isSell) {
+        final curQty = qty[t]!;
+        if (curQty > 0) {
+          final avgCostRubPerUnit = costBasisRub[t]! / curQty;
+          final sellQty = p.quantity > curQty ? curQty : p.quantity;
+          final proceedsRub =
+              CurrencyService.toRub(sellQty * p.pricePerUnit - p.fee, p.currency, date: p.date);
+          final costOfSoldRub = sellQty * avgCostRubPerUnit;
+          realizedRub += proceedsRub - costOfSoldRub;
+          costBasisRub[t] = costBasisRub[t]! - costOfSoldRub;
+        }
+        final newQty = curQty - p.quantity;
+        qty[t] = newQty < 0 ? 0 : newQty;
+      } else {
+        costBasisRub[t] = costBasisRub[t]! +
+            CurrencyService.toRub(p.quantity * p.pricePerUnit + p.fee, p.currency, date: p.date);
+        qty[t] = qty[t]! + p.quantity;
+      }
+    }
+
+    return realizedRub;
+  }
+
   /// Стоимость текущих (не проданных полностью) позиций по секторам, в рублях.
   /// Секторы берутся из SectorService (ручная привязка > справочник > "Без сектора").
   static Map<String, double> currentValueBySector() {
@@ -226,6 +306,65 @@ class AnalyticsService {
       }
     });
     return best;
+  }
+
+  /// Чистое изменение стоимости портфеля за период, БЕЗ учёта новых покупок
+  /// и продаж, сделанных внутри периода: состав (тикер → количество) на
+  /// начало периода фиксируется, и этот же набор оценивается по ценам на
+  /// начало периода и по сегодняшним. Для PeriodFilter.all возвращает null —
+  /// там нет "состава на начало", с которым можно сравнивать (для всего
+  /// времени такую роль уже играет "Общая прибыль").
+  static PeriodChange? portfolioChangeForPeriod(PeriodFilter f) {
+    final start = _periodStart(f);
+    if (start == null) return null;
+
+    final purchasesSorted = [...StorageService.purchases]..sort((a, b) => a.date.compareTo(b.date));
+
+    // Состав портфеля на начало периода: количество и последняя известная
+    // на тот момент цена/валюта каждого тикера.
+    final qtyAtStart = <String, double>{};
+    final priceAtStart = <String, double>{};
+    final currencyOf = <String, String>{};
+    for (final p in purchasesSorted) {
+      if (p.date.isAfter(start)) break;
+      final newQty = (qtyAtStart[p.ticker] ?? 0) + p.signedQuantity;
+      qtyAtStart[p.ticker] = newQty < 0 ? 0 : newQty;
+      priceAtStart[p.ticker] = p.pricePerUnit;
+      currencyOf[p.ticker] = p.currency;
+    }
+
+    // Последняя цена сделки ПОСЛЕ начала периода на тикер — пригодится для
+    // бумаг, которые к сегодняшнему дню уже полностью проданы: их сегодняшней
+    // "рыночной" оценки в currentHoldings() уже нет, но известна цена продажи.
+    final lastPriceAfterStart = <String, double>{};
+    for (final p in purchasesSorted) {
+      if (p.date.isAfter(start)) {
+        lastPriceAfterStart[p.ticker] = p.pricePerUnit;
+      }
+    }
+
+    final holdingsToday = currentHoldings();
+
+    double valueStart = 0;
+    double valueEnd = 0;
+    qtyAtStart.forEach((ticker, q) {
+      if (q <= 1e-9) return;
+      final cur = currencyOf[ticker] ?? 'RUB';
+      // Приоритет — реально сохранённая ручная цена на начало периода (или
+      // ближайшую дату до него); если пользователь её не вводил, откатываемся
+      // к цене последней сделки на тот момент (старое приближение).
+      final priceStart = ManualPriceService.priceAt(ticker, start) ?? priceAtStart[ticker] ?? 0;
+      valueStart += CurrencyService.toRub(q * priceStart, cur, date: start);
+
+      final holdingNow = holdingsToday[ticker];
+      final priceEnd = holdingNow?.displayPrice ?? lastPriceAfterStart[ticker] ?? priceStart;
+      valueEnd += CurrencyService.toRub(q * priceEnd, cur);
+    });
+
+    if (valueStart <= 0) return null;
+    final changeAbs = valueEnd - valueStart;
+    final changePct = (changeAbs / valueStart) * 100;
+    return PeriodChange(valueStart: valueStart, valueEnd: valueEnd, changeAbs: changeAbs, changePct: changePct);
   }
 
   static List<MapEntry<DateTime, double>> portfolioValueTimeline() {
@@ -329,5 +468,123 @@ class AnalyticsService {
       }
     }
     return mid * 100;
+  }
+
+  /// Прогноз дохода на бумагу за 12 мес — НЕ гарантия, а честная проекция
+  /// по факту фактических выплат за последние 365 дней, приведённая к
+  /// сегодняшнему количеству бумаг в портфеле (а не к сумме, которая была
+  /// выплачена тогда — количество бумаг могло меняться). Работает полностью
+  /// офлайн: использует только уже введённые вручную дивиденды/купоны.
+  static Map<String, DividendForecast> dividendForecastByTicker() {
+    final holdings = currentHoldings();
+    final cutoff = DateTime.now().subtract(const Duration(days: 365));
+    final purchasesSorted = [...StorageService.purchases]..sort((a, b) => a.date.compareTo(b.date));
+    final incomesSorted = [...StorageService.incomes]..sort((a, b) => a.date.compareTo(b.date));
+
+    // Сколько бумаг данного тикера было в портфеле на конкретную дату —
+    // нужно, чтобы вычислить выплату "на одну бумагу" в момент каждой
+    // исторической выплаты (общая сумма сама по себе не годится для
+    // проекции на сегодняшнее, другое, количество).
+    double qtyAt(String ticker, DateTime date) {
+      double q = 0;
+      for (final p in purchasesSorted) {
+        if (p.ticker != ticker) continue;
+        if (p.date.isAfter(date)) break;
+        q += p.signedQuantity;
+      }
+      return q < 0 ? 0 : q;
+    }
+
+    final result = <String, DividendForecast>{};
+    holdings.forEach((ticker, holding) {
+      final relevant = incomesSorted.where((i) => i.ticker == ticker && i.date.isAfter(cutoff));
+      double projectedRub = 0;
+      bool hasHistory = false;
+      for (final inc in relevant) {
+        final qAtIncome = qtyAt(ticker, inc.date);
+        if (qAtIncome <= 1e-9) continue; // выплата была до того, как бумага появилась в портфеле — пропускаем
+        final perShare = inc.amountNet / qAtIncome;
+        projectedRub += CurrencyService.toRub(perShare * holding.qty, inc.currency);
+        hasHistory = true;
+      }
+      final yieldPct = holding.valueRub > 0 ? (projectedRub / holding.valueRub) * 100 : 0.0;
+      result[ticker] = DividendForecast(
+        ticker: ticker,
+        last12mRub: projectedRub,
+        yieldPct: yieldPct,
+        hasHistory: hasHistory,
+      );
+    });
+    return result;
+  }
+
+  /// Суммарный прогноз дохода по всему портфелю за 12 мес (по факту прошлых выплат).
+  static double totalDividendForecastRub() =>
+      dividendForecastByTicker().values.fold(0.0, (s, f) => s + f.last12mRub);
+
+  /// Текущая стоимость и суммарная прибыль (нереализованная + реализованная +
+  /// доход) для явно переданных списков сделок/доходов — в отличие от
+  /// большинства методов выше, не привязан к текущему активному портфелю.
+  /// Используется на странице со списком портфелей, чтобы посчитать
+  /// статистику для КАЖДОГО портфеля, включая неактивные сейчас, не трогая
+  /// состояние StorageService.
+  static ({double valueRub, double profitRub}) summaryFor({
+    required List<Purchase> purchases,
+    required List<Income> incomes,
+  }) {
+    final sorted = [...purchases]..sort((a, b) => a.date.compareTo(b.date));
+
+    final qty = <String, double>{};
+    final costBasisRub = <String, double>{};
+    final lastPrice = <String, double>{};
+    final currencyOf = <String, String>{};
+    double realizedRub = 0;
+
+    for (final p in sorted) {
+      final t = p.ticker;
+      qty.putIfAbsent(t, () => 0);
+      costBasisRub.putIfAbsent(t, () => 0);
+      currencyOf[t] = p.currency;
+      lastPrice[t] = p.pricePerUnit;
+
+      if (p.isSell) {
+        final curQty = qty[t]!;
+        if (curQty > 0) {
+          final avgCostRubPerUnit = costBasisRub[t]! / curQty;
+          final sellQty = p.quantity > curQty ? curQty : p.quantity;
+          final proceedsRub =
+              CurrencyService.toRub(sellQty * p.pricePerUnit - p.fee, p.currency, date: p.date);
+          final costOfSoldRub = sellQty * avgCostRubPerUnit;
+          realizedRub += proceedsRub - costOfSoldRub;
+          costBasisRub[t] = costBasisRub[t]! - costOfSoldRub;
+        }
+        final newQty = curQty - p.quantity;
+        qty[t] = newQty < 0 ? 0 : newQty;
+      } else {
+        costBasisRub[t] = costBasisRub[t]! +
+            CurrencyService.toRub(p.quantity * p.pricePerUnit + p.fee, p.currency, date: p.date);
+        qty[t] = qty[t]! + p.quantity;
+      }
+    }
+
+    double valueRub = 0;
+    double unrealizedRub = 0;
+    qty.forEach((ticker, q) {
+      if (q <= 1e-9) return;
+      final cur = currencyOf[ticker] ?? 'RUB';
+      final lastPx = lastPrice[ticker] ?? 0;
+      final manualPx = ManualPriceService.get(ticker);
+      final displayPx = manualPx ?? lastPx;
+      final v = CurrencyService.toRub(q * displayPx, cur);
+      valueRub += v;
+      unrealizedRub += v - costBasisRub[ticker]!;
+    });
+
+    double incomeRub = 0;
+    for (final i in incomes) {
+      incomeRub += CurrencyService.toRub(i.amountNet, i.currency, date: i.date);
+    }
+
+    return (valueRub: valueRub, profitRub: unrealizedRub + realizedRub + incomeRub);
   }
 }

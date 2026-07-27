@@ -3,6 +3,8 @@ import 'package:intl/intl.dart';
 import 'package:file_picker/file_picker.dart';
 import '../services/theme_service.dart';
 import '../services/backup_service.dart';
+import '../services/backup_settings_service.dart';
+import '../services/auto_backup_service.dart';
 import '../services/currency_service.dart';
 import '../services/tax_service.dart';
 import '../services/sector_service.dart';
@@ -21,8 +23,12 @@ class _SettingsScreenState extends State<SettingsScreen> {
     return Scaffold(
       appBar: AppBar(title: const Text('Настройки')),
       body: ListView(
-        padding: const EdgeInsets.all(16),
+        padding: const EdgeInsets.fromLTRB(16, 8, 16, 32),
         children: [
+          const Text('Персонализация', style: TextStyle(fontWeight: FontWeight.w800, fontSize: 20, letterSpacing: -.4)),
+          const SizedBox(height: 4),
+          Text('Настрой приложение под свой стиль', style: TextStyle(color: Colors.grey.shade500, fontSize: 13)),
+          const SizedBox(height: 24),
           const Text('Цветовая палитра', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
           const SizedBox(height: 12),
           ValueListenableBuilder<Color>(
@@ -166,6 +172,18 @@ class _SettingsScreenState extends State<SettingsScreen> {
             ),
           ),
           const SizedBox(height: 24),
+          const Text('Автосохранение бэкапа', style: TextStyle(fontWeight: FontWeight.w600, fontSize: 14)),
+          const SizedBox(height: 4),
+          Text(
+            'Приложение само сохраняет JSON-бэкап текущего портфеля в выбранную папку при каждом изменении '
+            'данных — без диалогов и подтверждений. На некоторых версиях Android доступны для автозаписи не '
+            'все папки — если сохранение не срабатывает, попробуй выбрать другую (например, папку "Загрузки" '
+            'или папку внутри собственного хранилища приложения).',
+            style: TextStyle(color: Colors.grey.shade500, fontSize: 12),
+          ),
+          const SizedBox(height: 12),
+          const _AutoBackupSection(),
+          const SizedBox(height: 24),
           Center(
             child: Text(
               'Все данные хранятся только на этом устройстве.\nНикакого интернета и облака.',
@@ -195,25 +213,65 @@ class _SettingsScreenState extends State<SettingsScreen> {
     );
     if (confirm != true) return;
 
-    final result = await FilePicker.platform.pickFiles(
+    final picked = await FilePicker.platform.pickFiles(
       type: FileType.custom,
       allowedExtensions: ['json'],
     );
-    if (result == null || result.files.single.path == null) return;
+    if (picked == null || picked.files.single.path == null) return;
 
     try {
-      final count = await BackupService.importFromFilePath(result.files.single.path!);
+      final result = await BackupService.importFromFilePath(picked.files.single.path!);
       if (!context.mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Импортировано записей: $count')),
+        SnackBar(content: Text('Импортировано записей: ${result.count}')),
       );
       setState(() {});
+
+      if (result.missingLogos.isNotEmpty) {
+        if (!context.mounted) return;
+        final wantsManualPick = await showDialog<bool>(
+          context: context,
+          builder: (ctx) => AlertDialog(
+            title: const Text('Не нашлись иконки бумаг'),
+            content: Text(
+              'Рядом с файлом бэкапа не нашлось ${result.missingLogos.length} '
+              '${_pluralIcon(result.missingLogos.length)} (${result.missingLogos.keys.join(", ")}). '
+              'Часто причина в том, что системный проводник Android открывает временную копию файла, '
+              'а не саму папку, где он лежит. Выбрать папку с иконками вручную?',
+            ),
+            actions: [
+              TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Пропустить')),
+              FilledButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Выбрать папку')),
+            ],
+          ),
+        );
+        if (wantsManualPick == true) {
+          final folder = await FilePicker.platform.getDirectoryPath();
+          if (folder != null) {
+            final fixed = await BackupService.retryMissingLogos(result.missingLogos, folder);
+            if (!context.mounted) return;
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(content: Text(fixed > 0 ? 'Подтянуто иконок: $fixed' : 'В этой папке иконки не нашлись')),
+            );
+            setState(() {});
+          }
+        }
+      }
     } catch (e) {
       if (!context.mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('Не удалось прочитать файл: $e')),
       );
     }
+  }
+
+  String _pluralIcon(int n) {
+    final mod100 = n % 100;
+    final mod10 = n % 10;
+    if (mod100 >= 11 && mod100 <= 14) return 'иконок';
+    if (mod10 == 1) return 'иконка';
+    if (mod10 >= 2 && mod10 <= 4) return 'иконки';
+    return 'иконок';
   }
 }
 
@@ -469,5 +527,90 @@ class _SectorsSectionState extends State<_SectorsSection> {
     if (confirm == true) {
       await SectorService.removeSector(sector);
     }
+  }
+}
+
+/// Настройка автосохранения бэкапа: включение/выключение и выбор папки.
+class _AutoBackupSection extends StatefulWidget {
+  const _AutoBackupSection();
+
+  @override
+  State<_AutoBackupSection> createState() => _AutoBackupSectionState();
+}
+
+class _AutoBackupSectionState extends State<_AutoBackupSection> {
+  final _dateFormat = DateFormat('dd.MM.yyyy HH:mm');
+
+  Future<void> _pickFolder() async {
+    final path = await FilePicker.platform.getDirectoryPath();
+    if (path == null) return;
+    await BackupSettingsService.setFolderPath(path);
+    await AutoBackupService.runNowIfEnabled();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return ValueListenableBuilder<int>(
+      valueListenable: BackupSettingsService.version,
+      builder: (context, _, __) {
+        final path = BackupSettingsService.folderPath;
+        final enabled = BackupSettingsService.enabled;
+        final last = BackupSettingsService.lastBackupAt;
+        final error = BackupSettingsService.lastError;
+
+        return Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Card(
+              child: SwitchListTile(
+                title: const Text('Автосохранение включено'),
+                subtitle: Text(path ?? 'Сначала выбери папку ниже'),
+                value: enabled && path != null,
+                onChanged: (v) async {
+                  if (v && path == null) {
+                    await _pickFolder();
+                    if (BackupSettingsService.folderPath == null) return;
+                  }
+                  await BackupSettingsService.setEnabled(v);
+                  if (v) await AutoBackupService.runNowIfEnabled();
+                },
+              ),
+            ),
+            const SizedBox(height: 8),
+            Card(
+              child: ListTile(
+                leading: const Icon(Icons.folder_outlined),
+                title: Text(path == null ? 'Выбрать папку' : 'Изменить папку'),
+                subtitle: last != null ? Text('Последнее сохранение: ${_dateFormat.format(last)}') : null,
+                onTap: _pickFolder,
+              ),
+            ),
+            if (error != null) ...[
+              const SizedBox(height: 8),
+              Container(
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  color: Colors.red.withOpacity(0.08),
+                  borderRadius: BorderRadius.circular(14),
+                ),
+                child: Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Icon(Icons.error_outline, color: Colors.red, size: 18),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        'Последнее сохранение не удалось: $error\nПопробуй выбрать другую папку (например, "Загрузки").',
+                        style: const TextStyle(fontSize: 12, color: Colors.red),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ],
+        );
+      },
+    );
   }
 }

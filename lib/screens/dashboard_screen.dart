@@ -72,11 +72,13 @@ class _DashboardScreenState extends State<DashboardScreen> {
     final timeline = AnalyticsService.portfolioValueTimeline();
     final currentValue = AnalyticsService.currentPortfolioValueRub();
     final unrealizedPnl = AnalyticsService.totalUnrealizedPnlRub();
+    final realizedPnl = AnalyticsService.totalRealizedPnlRub();
     final holdings = AnalyticsService.currentHoldings();
     final invested = AnalyticsService.totalInvested(f: _period);
     final income = AnalyticsService.totalIncome(f: _period);
     final totalIncomeAllTime = AnalyticsService.totalIncome(f: PeriodFilter.all);
-    final totalProfit = unrealizedPnl + totalIncomeAllTime;
+    final totalProfit = unrealizedPnl + realizedPnl + totalIncomeAllTime;
+    final dividendForecastRub = AnalyticsService.totalDividendForecastRub();
     final bySector = AnalyticsService.currentValueBySector();
     final byTicker = AnalyticsService.currentValueByTicker();
     final incomeByMonth = AnalyticsService.incomeByMonth(f: _incomeChartPeriod);
@@ -86,47 +88,58 @@ class _DashboardScreenState extends State<DashboardScreen> {
     final taxDue = TaxService.enabled ? TaxService.totalTaxDue() : 0.0;
     final primary = Theme.of(context).colorScheme.primary;
 
-    // прирост стоимости за отображаемый период (по timeline)
-    double? changeAbs;
-    double? changePct;
-    if (timeline.length > 1) {
-      final first = timeline.first.value;
-      final last = timeline.last.value;
-      if (first > 0) {
-        changeAbs = last - first;
-        changePct = (changeAbs / first) * 100;
-      }
-    }
+    // Чистая переоценка портфеля за выбранный период: состав (тикер + кол-во)
+    // фиксируется на начало периода, покупки/продажи внутри периода на это
+    // число не влияют — см. AnalyticsService.portfolioChangeForPeriod.
+    // Для "Всё время" метод возвращает null (нет состава "на начало"), и
+    // строка изменения за период просто не показывается.
+    final periodChange = AnalyticsService.portfolioChangeForPeriod(_period);
+    final changeAbs = periodChange?.changeAbs;
+    final changePct = periodChange?.changePct;
 
     return Scaffold(
       appBar: AppBar(
         title: const Text('Мой портфель'),
       ),
       body: ListView(
-        padding: const EdgeInsets.fromLTRB(16, 8, 16, 24),
+        padding: const EdgeInsets.fromLTRB(16, 6, 16, 32),
         children: [
           // --- Hero-карточка стоимости портфеля ---
-          Container(
-            padding: const EdgeInsets.all(20),
+          TweenAnimationBuilder<double>(
+            duration: const Duration(milliseconds: 900),
+            curve: Curves.easeOutCubic,
+            tween: Tween(begin: 0, end: currentValue),
+            builder: (context, animatedValue, _) => Container(
+            padding: const EdgeInsets.all(22),
             decoration: BoxDecoration(
-              borderRadius: BorderRadius.circular(24),
+              borderRadius: BorderRadius.circular(28),
               gradient: LinearGradient(
                 begin: Alignment.topLeft,
                 end: Alignment.bottomRight,
-                colors: [primary, primary.withOpacity(0.75)],
+                colors: [const Color(0xFF101B3D), primary, primary.withOpacity(0.72)],
               ),
               boxShadow: [
-                BoxShadow(color: primary.withOpacity(0.35), blurRadius: 16, offset: const Offset(0, 8)),
+                BoxShadow(color: primary.withOpacity(0.28), blurRadius: 28, offset: const Offset(0, 14)),
               ],
             ),
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                const Text('Стоимость портфеля', style: TextStyle(color: Colors.white70, fontSize: 13)),
+                Row(
+                  children: [
+                    const Text('СТОИМОСТЬ ПОРТФЕЛЯ', style: TextStyle(color: Colors.white70, fontSize: 11, fontWeight: FontWeight.w700, letterSpacing: 1.1)),
+                    const Spacer(),
+                    Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 5),
+                      decoration: BoxDecoration(color: Colors.white.withOpacity(.14), borderRadius: BorderRadius.circular(10)),
+                      child: Text('${holdings.length} поз.', style: const TextStyle(color: Colors.white, fontSize: 11, fontWeight: FontWeight.w700)),
+                    ),
+                  ],
+                ),
                 const SizedBox(height: 6),
                 Text(
-                  currentValue.toStringAsFixed(0),
-                  style: const TextStyle(color: Colors.white, fontSize: 32, fontWeight: FontWeight.bold),
+                  '${animatedValue.toStringAsFixed(0)} ₽',
+                  style: const TextStyle(color: Colors.white, fontSize: 34, fontWeight: FontWeight.w800, letterSpacing: -1.1),
                 ),
                 if (changeAbs != null && changePct != null)
                   Padding(
@@ -147,7 +160,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                       ],
                     ),
                   ),
-                if (holdings.isNotEmpty || totalIncomeAllTime != 0)
+                if (holdings.isNotEmpty || totalIncomeAllTime != 0 || realizedPnl != 0)
                   Padding(
                     padding: const EdgeInsets.only(top: 6),
                     child: Row(
@@ -172,10 +185,20 @@ class _DashboardScreenState extends State<DashboardScreen> {
                       ],
                     ),
                   ),
+                if (holdings.isNotEmpty || totalIncomeAllTime != 0 || realizedPnl != 0)
+                  Padding(
+                    padding: const EdgeInsets.only(top: 2),
+                    child: Text(
+                      'нереализ. ${unrealizedPnl >= 0 ? "+" : ""}${unrealizedPnl.toStringAsFixed(0)} '
+                      '· реализ. ${realizedPnl >= 0 ? "+" : ""}${realizedPnl.toStringAsFixed(0)} '
+                      '· доход +${totalIncomeAllTime.toStringAsFixed(0)}',
+                      style: const TextStyle(color: Colors.white60, fontSize: 10.5),
+                    ),
+                  ),
                 const SizedBox(height: 16),
                 if (timeline.length > 1)
                   SizedBox(
-                    height: 120,
+                    height: 132,
                     child: LineChart(
                       LineChartData(
                         gridData: const FlGridData(show: false),
@@ -187,7 +210,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                             spots: [for (int i = 0; i < timeline.length; i++) FlSpot(i.toDouble(), timeline[i].value)],
                             isCurved: true,
                             color: Colors.white,
-                            barWidth: 2.5,
+                            barWidth: 3,
                             dotData: const FlDotData(show: false),
                             belowBarData: BarAreaData(show: true, color: Colors.white.withOpacity(0.15)),
                           ),
@@ -202,6 +225,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
                   ),
               ],
             ),
+            ),
+          ),
           ),
 
           const SizedBox(height: 16),
@@ -435,6 +460,42 @@ class _DashboardScreenState extends State<DashboardScreen> {
             const SizedBox(height: 24),
           ],
 
+          // --- Прогноз дохода на 12 мес (по факту прошлых выплат) ---
+          if (dividendForecastRub > 0) ...[
+            Container(
+              padding: const EdgeInsets.all(16),
+              decoration: BoxDecoration(
+                color: Colors.green.withOpacity(0.08),
+                borderRadius: BorderRadius.circular(20),
+              ),
+              child: Row(
+                children: [
+                  const Icon(Icons.query_stats, color: Colors.green, size: 22),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        const Text('Ожидаемый доход за 12 мес', style: TextStyle(fontSize: 12, color: Colors.green)),
+                        const SizedBox(height: 2),
+                        Text(
+                          '~${dividendForecastRub.toStringAsFixed(0)} ₽',
+                          style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: Colors.green),
+                        ),
+                        const SizedBox(height: 2),
+                        const Text(
+                          'по факту выплат за прошлый год на сегодняшнее количество бумаг — не гарантия',
+                          style: TextStyle(fontSize: 10.5, color: Colors.green),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 24),
+          ],
+
           // --- Доход по месяцам ---
           if (StorageService.incomes.isNotEmpty) ...[
             const Text('Дивиденды и купоны по месяцам', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
@@ -643,22 +704,30 @@ class _DashboardScreenState extends State<DashboardScreen> {
   }
 
   Widget _miniStat(BuildContext context, String label, double value, IconData icon) {
+    final primary = Theme.of(context).colorScheme.primary;
     return Container(
-      padding: const EdgeInsets.all(14),
+      padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
         color: Theme.of(context).colorScheme.surfaceContainerLow,
-        borderRadius: BorderRadius.circular(16),
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(color: Theme.of(context).colorScheme.outlineVariant.withOpacity(.45)),
       ),
       child: Row(
         children: [
-          Icon(icon, size: 20, color: Theme.of(context).colorScheme.primary),
-          const SizedBox(width: 10),
+          Container(
+            width: 38,
+            height: 38,
+            decoration: BoxDecoration(color: primary.withOpacity(.12), borderRadius: BorderRadius.circular(13)),
+            child: Icon(icon, size: 20, color: primary),
+          ),
+          const SizedBox(width: 12),
           Expanded(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text(label, style: TextStyle(fontSize: 11, color: Colors.grey.shade500)),
-                Text(value.toStringAsFixed(0), style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 15)),
+                Text(label.toUpperCase(), style: TextStyle(fontSize: 9.5, fontWeight: FontWeight.w700, letterSpacing: .7, color: Colors.grey.shade500)),
+                const SizedBox(height: 2),
+                Text('${value.toStringAsFixed(0)} ₽', style: const TextStyle(fontWeight: FontWeight.w800, fontSize: 16, letterSpacing: -.3)),
               ],
             ),
           ),
