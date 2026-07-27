@@ -227,7 +227,6 @@ class _DashboardScreenState extends State<DashboardScreen> {
             ),
             ),
           ),
-          ),
 
           const SizedBox(height: 16),
 
