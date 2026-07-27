@@ -18,6 +18,8 @@ class DashboardScreen extends StatefulWidget {
 class _DashboardScreenState extends State<DashboardScreen> {
   PeriodFilter _period = PeriodFilter.all;
   PeriodFilter _incomeChartPeriod = PeriodFilter.year1;
+  int? _selectedIncomeIndex;
+  final Map<String, int> _selectedPieIndexes = {};
 
   @override
   void initState() {
@@ -188,11 +190,14 @@ class _DashboardScreenState extends State<DashboardScreen> {
                 if (holdings.isNotEmpty || totalIncomeAllTime != 0 || realizedPnl != 0)
                   Padding(
                     padding: const EdgeInsets.only(top: 2),
-                    child: Text(
-                      'нереализ. ${unrealizedPnl >= 0 ? "+" : ""}${unrealizedPnl.toStringAsFixed(0)} '
-                      '· реализ. ${realizedPnl >= 0 ? "+" : ""}${realizedPnl.toStringAsFixed(0)} '
-                      '· доход +${totalIncomeAllTime.toStringAsFixed(0)}',
-                      style: const TextStyle(color: Colors.white60, fontSize: 10.5),
+                    child: Wrap(
+                      spacing: 8,
+                      runSpacing: 3,
+                      children: [
+                        _heroMetric('Нереализ. ${unrealizedPnl >= 0 ? "+" : ""}${unrealizedPnl.toStringAsFixed(0)}'),
+                        _heroMetric('Реализ. ${realizedPnl >= 0 ? "+" : ""}${realizedPnl.toStringAsFixed(0)}'),
+                        _heroMetric('Доход +${totalIncomeAllTime.toStringAsFixed(0)}'),
+                      ],
                     ),
                   ),
                 const SizedBox(height: 16),
@@ -447,7 +452,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
           if (bySector.isNotEmpty) ...[
             const Text('Распределение по секторам', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
             const SizedBox(height: 12),
-            _buildPieWithLegend(context, bySector),
+            _buildPieWithLegend(context, bySector, chartKey: 'sectors'),
             const SizedBox(height: 24),
           ],
 
@@ -455,7 +460,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
           if (byTicker.isNotEmpty) ...[
             const Text('Распределение по бумагам', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
             const SizedBox(height: 12),
-            _buildPieWithLegend(context, byTicker),
+            _buildPieWithLegend(context, byTicker, chartKey: 'tickers'),
             const SizedBox(height: 24),
           ],
 
@@ -570,6 +575,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
     final keys = data.keys.toList();
     final values = data.values.toList();
     final primary = Theme.of(context).colorScheme.primary;
+    final selectedIndex = (_selectedIncomeIndex != null && _selectedIncomeIndex! < values.length) ? _selectedIncomeIndex! : values.length - 1;
     const pointWidth = 64.0;
     final needsScroll = keys.length > 6;
     final chartWidth = needsScroll ? keys.length * pointWidth : null;
@@ -601,6 +607,10 @@ class _DashboardScreenState extends State<DashboardScreen> {
             ),
           ),
           lineTouchData: LineTouchData(
+            touchCallback: (event, response) {
+              final spot = response?.lineBarSpots?.isNotEmpty == true ? response!.lineBarSpots!.first : null;
+              if (spot != null) setState(() => _selectedIncomeIndex = spot.x.toInt());
+            },
             touchTooltipData: LineTouchTooltipData(
               getTooltipItems: (spots) => spots.map((s) {
                 return LineTooltipItem(
@@ -639,29 +649,74 @@ class _DashboardScreenState extends State<DashboardScreen> {
         child: chart,
       );
     }
-    return chart;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        AnimatedContainer(
+          duration: const Duration(milliseconds: 180),
+          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+          decoration: BoxDecoration(
+            color: primary.withOpacity(.1),
+            borderRadius: BorderRadius.circular(16),
+          ),
+          child: Row(
+            children: [
+              Icon(Icons.touch_app_outlined, size: 17, color: primary),
+              const SizedBox(width: 8),
+              Expanded(child: Text(_monthLabel(keys[selectedIndex]), style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 12))),
+              Text('${values[selectedIndex].toStringAsFixed(0)} ₽', style: TextStyle(color: primary, fontWeight: FontWeight.w800)),
+            ],
+          ),
+        ),
+        const SizedBox(height: 10),
+        chart,
+      ],
+    );
   }
 
-  Widget _buildPieWithLegend(BuildContext context, Map<String, double> data) {
+  Widget _buildPieWithLegend(BuildContext context, Map<String, double> data, {required String chartKey}) {
     final total = data.values.fold(0.0, (s, v) => s + v);
+    final selectedIndex = (_selectedPieIndexes[chartKey] ?? 0).clamp(0, data.length - 1) as int;
+    final selectedLabel = data.keys.elementAt(selectedIndex);
+    final selectedValue = data.values.elementAt(selectedIndex);
     return Column(
       children: [
         SizedBox(
           height: 160,
-          child: PieChart(
-            PieChartData(
-              sections: [
-                for (int i = 0; i < data.length; i++)
-                  PieChartSectionData(
-                    value: data.values.elementAt(i),
-                    color: _sectorColors[i % _sectorColors.length],
-                    title: '',
-                    radius: 50,
+          child: Stack(
+            alignment: Alignment.center,
+            children: [
+              PieChart(
+                PieChartData(
+                  pieTouchData: PieTouchData(
+                    touchCallback: (event, response) {
+                      final index = response?.touchedSection?.touchedSectionIndex;
+                      if (index != null && index >= 0) setState(() => _selectedPieIndexes[chartKey] = index);
+                    },
                   ),
-              ],
-              sectionsSpace: 2,
-              centerSpaceRadius: 34,
-            ),
+                  sections: [
+                    for (int i = 0; i < data.length; i++)
+                      PieChartSectionData(
+                        value: data.values.elementAt(i),
+                        color: _sectorColors[i % _sectorColors.length],
+                        title: '',
+                        radius: i == selectedIndex ? 58 : 48,
+                      ),
+                  ],
+                  sectionsSpace: 3,
+                  centerSpaceRadius: 42,
+                ),
+              ),
+              IgnorePointer(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Text('${total > 0 ? (selectedValue / total * 100).toStringAsFixed(0) : 0}%', style: const TextStyle(fontSize: 20, fontWeight: FontWeight.w800)),
+                    SizedBox(width: 76, child: Text(selectedLabel, maxLines: 1, overflow: TextOverflow.ellipsis, textAlign: TextAlign.center, style: TextStyle(fontSize: 10, color: Colors.grey.shade600))),
+                  ],
+                ),
+              ),
+            ],
           ),
         ),
         const SizedBox(height: 14),
@@ -671,29 +726,34 @@ class _DashboardScreenState extends State<DashboardScreen> {
           alignment: WrapAlignment.center,
           children: [
             for (int i = 0; i < data.length; i++)
-              Container(
-                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
-                decoration: BoxDecoration(
-                  color: Theme.of(context).colorScheme.surfaceContainerLow,
-                  borderRadius: BorderRadius.circular(10),
-                ),
-                child: Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Container(
-                      width: 8,
-                      height: 8,
-                      decoration: BoxDecoration(
-                        color: _sectorColors[i % _sectorColors.length],
-                        shape: BoxShape.circle,
+              GestureDetector(
+                onTap: () => setState(() => _selectedPieIndexes[chartKey] = i),
+                child: AnimatedContainer(
+                  duration: const Duration(milliseconds: 180),
+                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
+                  decoration: BoxDecoration(
+                    color: i == selectedIndex ? _sectorColors[i % _sectorColors.length].withOpacity(.16) : Theme.of(context).colorScheme.surfaceContainerLow,
+                    borderRadius: BorderRadius.circular(10),
+                    border: i == selectedIndex ? Border.all(color: _sectorColors[i % _sectorColors.length].withOpacity(.55)) : null,
+                  ),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Container(
+                        width: 8,
+                        height: 8,
+                        decoration: BoxDecoration(
+                          color: _sectorColors[i % _sectorColors.length],
+                          shape: BoxShape.circle,
+                        ),
                       ),
-                    ),
-                    const SizedBox(width: 6),
-                    Text(
-                      '${data.keys.elementAt(i)} ${total > 0 ? (data.values.elementAt(i) / total * 100).toStringAsFixed(0) : 0}%',
-                      style: const TextStyle(fontSize: 11, fontWeight: FontWeight.w600),
-                    ),
-                  ],
+                      const SizedBox(width: 6),
+                      Text(
+                        '${data.keys.elementAt(i)} ${total > 0 ? (data.values.elementAt(i) / total * 100).toStringAsFixed(0) : 0}%',
+                        style: const TextStyle(fontSize: 11, fontWeight: FontWeight.w600),
+                      ),
+                    ],
+                  ),
                 ),
               ),
           ],
@@ -732,6 +792,17 @@ class _DashboardScreenState extends State<DashboardScreen> {
           ),
         ],
       ),
+    );
+  }
+
+  Widget _heroMetric(String text) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
+      decoration: BoxDecoration(
+        color: Colors.white.withOpacity(.09),
+        borderRadius: BorderRadius.circular(8),
+      ),
+      child: Text(text, style: const TextStyle(color: Colors.white70, fontSize: 10)),
     );
   }
 }
