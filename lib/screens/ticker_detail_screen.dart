@@ -1,19 +1,26 @@
-import 'package:flutter/material.dart';
-import 'package:fl_chart/fl_chart.dart';
-import 'package:intl/intl.dart';
-import 'package:uuid/uuid.dart';
 import 'dart:io';
+import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
-import '../services/analytics_service.dart';
-import '../services/storage_service.dart';
-import '../services/favorites_service.dart';
-import '../services/tax_service.dart';
-import '../services/manual_price_service.dart';
-import '../services/logo_service.dart';
+import 'package:uuid/uuid.dart';
+import '../design/charts.dart';
+import '../design/fields.dart';
+import '../design/format.dart';
+import '../design/motion.dart';
+import '../design/surfaces.dart';
+import '../design/tokens.dart';
 import '../models/income.dart';
 import '../models/purchase.dart';
+import '../services/analytics_service.dart';
+import '../services/favorites_service.dart';
+import '../services/logo_service.dart';
+import '../services/manual_price_service.dart';
+import '../services/sector_service.dart';
+import '../services/storage_service.dart';
+import '../services/tax_service.dart';
 import '../widgets/ticker_avatar.dart';
 
+/// Карточка одной бумаги: сводка позиции, история цены, льгота ЛДВ,
+/// полученные выплаты и все сделки — плюс быстрые кнопки «купить/продать».
 class TickerDetailScreen extends StatefulWidget {
   final String ticker;
   const TickerDetailScreen({super.key, required this.ticker});
@@ -26,273 +33,190 @@ class _TickerDetailScreenState extends State<TickerDetailScreen> {
   @override
   Widget build(BuildContext context) {
     final ticker = widget.ticker;
-    final history = AnalyticsService.priceHistoryForTicker(ticker);
     final purchases = StorageService.purchases.where((p) => p.ticker == ticker).toList()
       ..sort((a, b) => b.date.compareTo(a.date));
     final holding = AnalyticsService.currentHoldings()[ticker];
-    final dividendForecast = holding != null ? AnalyticsService.dividendForecastByTicker()[ticker] : null;
+    final forecast = holding != null ? AnalyticsService.dividendForecastByTicker()[ticker] : null;
     final incomes = StorageService.incomes.where((i) => i.ticker == ticker).toList()
       ..sort((a, b) => b.date.compareTo(a.date));
     final incomeTotal = incomes.fold<double>(0, (s, i) => s + i.amountNet);
-    final openLots = (AnalyticsService.currentHoldings().containsKey(ticker) && TaxService.enabled)
+    final openLots = (holding != null && TaxService.enabled)
         ? TaxService.openLotsForTicker(ticker)
         : <OpenLotInfo>[];
     final taxBreakdown = TaxService.enabled ? TaxService.saleTaxBreakdown() : <String, SaleTaxResult>{};
-    final dateFormat = DateFormat('dd.MM.yyyy');
+    final priceHistory = ManualPriceService.historyFor(ticker);
     final name = purchases.isNotEmpty ? purchases.first.name : ticker;
-    final isFav = FavoritesService.isFavorite(ticker);
+    final sector = SectorService.sectorFor(ticker);
+
+    final pnlColor = AppColors.pnl(holding?.pnlRub ?? 0);
 
     return Scaffold(
-      appBar: AppBar(
-        title: Row(
-          children: [
-            GestureDetector(
-              onTap: () => _pickLogo(context, ticker),
-              onLongPress: () => _showLogoOptions(context, ticker),
-              child: Stack(
-                clipBehavior: Clip.none,
-                children: [
-                  TickerAvatar(ticker: ticker, size: 32),
-                  Positioned(
-                    right: -2,
-                    bottom: -2,
-                    child: Container(
-                      padding: const EdgeInsets.all(2),
-                      decoration: BoxDecoration(
-                        color: Theme.of(context).colorScheme.surface,
-                        shape: BoxShape.circle,
-                      ),
-                      child: Icon(Icons.camera_alt, size: 10, color: Theme.of(context).colorScheme.primary),
-                    ),
+      body: CustomScrollView(
+        physics: const BouncingScrollPhysics(parent: AlwaysScrollableScrollPhysics()),
+        slivers: [
+          _appBar(context, ticker, name, sector, holding, pnlColor),
+          SliverPadding(
+            padding: const EdgeInsets.fromLTRB(16, 18, 16, 24),
+            sliver: SliverList(
+              delegate: SliverChildListDelegate([
+                if (holding == null && purchases.isNotEmpty)
+                  const InfoBanner(
+                    icon: Icons.inventory_2_outlined,
+                    color: AppColors.neutral,
+                    text: 'Позиция закрыта — бумаги в портфеле нет. История сделок ниже сохранена.',
                   ),
-                ],
-              ),
-            ),
-            const SizedBox(width: 10),
-            Expanded(child: Text(ticker, overflow: TextOverflow.ellipsis)),
-          ],
-        ),
-        actions: [
-          IconButton(
-            icon: Icon(isFav ? Icons.star : Icons.star_border, color: isFav ? Colors.amber : null),
-            onPressed: () async {
-              await FavoritesService.toggle(ticker);
-              setState(() {});
-            },
-          ),
-        ],
-      ),
-      body: ListView(
-        padding: const EdgeInsets.all(16),
-        children: [
-          Container(
-            padding: const EdgeInsets.all(18),
-            decoration: BoxDecoration(
-              borderRadius: BorderRadius.circular(22),
-              gradient: LinearGradient(colors: [Theme.of(context).colorScheme.primaryContainer, Theme.of(context).colorScheme.surfaceContainerLow]),
-            ),
-            child: Row(
-              children: [
-                TickerAvatar(ticker: ticker, size: 44),
-                const SizedBox(width: 12),
-                Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                  Text(ticker, style: const TextStyle(fontSize: 20, fontWeight: FontWeight.w800)),
-                  const SizedBox(height: 2),
-                  Text(name, style: TextStyle(fontSize: 13, color: Colors.grey.shade600), maxLines: 1, overflow: TextOverflow.ellipsis),
-                ])),
-              ],
-            ),
-          ),
-          const SizedBox(height: 16),
-          _buildManualPriceHistoryCard(context, ticker),
-          const SizedBox(height: 16),
-          if (holding != null) ...[
-            Row(
-              children: [
-                Expanded(
-                  child: _statCard(context, 'В портфеле',
-                      '${holding.qty.toStringAsFixed(holding.qty == holding.qty.roundToDouble() ? 0 : 2)} шт'),
-                ),
-                const SizedBox(width: 10),
-                Expanded(
-                  child: _statCard(context, 'Средняя цена', holding.avgCost.toStringAsFixed(2)),
-                ),
-                const SizedBox(width: 10),
-                Expanded(
-                  child: GestureDetector(
-                    onTap: () => _showSetPriceDialog(context, ticker, holding),
-                    child: _statCard(
-                      context,
-                      holding.hasManualPrice ? 'Текущая цена ✎' : 'Последняя цена ✎',
-                      holding.displayPrice.toStringAsFixed(2),
-                      valueColor: holding.hasManualPrice ? Theme.of(context).colorScheme.primary : null,
-                    ),
-                  ),
-                ),
-              ],
-            ),
-            const SizedBox(height: 10),
-            Row(
-              children: [
-                Expanded(
-                  child: _statCard(context, 'Стоимость', holding.valueRub.toStringAsFixed(0)),
-                ),
-                const SizedBox(width: 10),
-                Expanded(
-                  child: _statCard(
-                    context,
-                    'Прибыль/убыток',
-                    '${holding.pnlRub >= 0 ? "+" : ""}${holding.pnlRub.toStringAsFixed(0)} (${holding.pnlPct.toStringAsFixed(1)}%)',
-                    valueColor: holding.pnlRub >= 0 ? Colors.green : Colors.red,
-                  ),
-                ),
-              ],
-            ),
-          ] else
-            Padding(
-              padding: const EdgeInsets.symmetric(vertical: 8),
-              child: Text('Эта бумага сейчас не в портфеле (продана полностью)', style: TextStyle(color: Colors.grey.shade500)),
-            ),
-          if (openLots.isNotEmpty) ...[
-            const SizedBox(height: 10),
-            _buildLdvCard(context, openLots),
-          ],
-          const SizedBox(height: 24),
-          if (history.length > 1) ...[
-            const Text('История сделок по цене', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
-            const SizedBox(height: 12),
-            SizedBox(
-              height: 200,
-              child: LineChart(
-                LineChartData(
-                  gridData: const FlGridData(show: true, drawVerticalLine: false),
-                  titlesData: const FlTitlesData(
-                    topTitles: AxisTitles(sideTitles: SideTitles(showTitles: false)),
-                    rightTitles: AxisTitles(sideTitles: SideTitles(showTitles: false)),
-                    bottomTitles: AxisTitles(sideTitles: SideTitles(showTitles: false)),
-                  ),
-                  borderData: FlBorderData(show: false),
-                  lineBarsData: [
-                    LineChartBarData(
-                      spots: [for (int i = 0; i < history.length; i++) FlSpot(i.toDouble(), history[i].price)],
-                      isCurved: true,
-                      color: Theme.of(context).colorScheme.primary,
-                      barWidth: 3,
-                      dotData: FlDotData(
-                        show: true,
-                        getDotPainter: (spot, percent, bar, index) => FlDotCirclePainter(
-                          radius: 4,
-                          color: history[index].isSell ? Colors.red : Theme.of(context).colorScheme.primary,
-                          strokeWidth: 0,
+
+                if (holding != null) ...[
+                  FadeSlideIn(
+                    child: IntrinsicHeight(
+                        child: Row(
+                      children: [
+                        Expanded(
+                          child: StatTile(
+                            label: 'В портфеле',
+                            icon: Icons.inventory_2_outlined,
+                            text: '${Fmt.qty(holding.qty)} шт',
+                            color: AppColors.info,
+                          ),
                         ),
-                      ),
-                      belowBarData: BarAreaData(
-                        show: true,
-                        color: Theme.of(context).colorScheme.primary.withOpacity(0.15),
-                      ),
+                        const SizedBox(width: 10),
+                        Expanded(
+                          child: StatTile(
+                            label: 'Средняя цена',
+                            icon: Icons.straighten_rounded,
+                            text: holding.avgCost.toStringAsFixed(2),
+                            color: AppColors.violet,
+                          ),
+                        ),
+                      ],
                     ),
-                  ],
-                ),
-              ),
-            ),
-            Padding(
-              padding: const EdgeInsets.only(top: 8),
-              child: Row(
-                children: [
-                  Container(width: 8, height: 8, decoration: BoxDecoration(shape: BoxShape.circle, color: Theme.of(context).colorScheme.primary)),
-                  const SizedBox(width: 4),
-                  const Text('Покупка', style: TextStyle(fontSize: 11)),
-                  const SizedBox(width: 12),
-                  Container(width: 8, height: 8, decoration: const BoxDecoration(shape: BoxShape.circle, color: Colors.red)),
-                  const SizedBox(width: 4),
-                  const Text('Продажа', style: TextStyle(fontSize: 11)),
+                      ),
+                  ),
+                  const SizedBox(height: 10),
+                  FadeSlideIn(
+                    delay: const Duration(milliseconds: 60),
+                    child: IntrinsicHeight(
+                        child: Row(
+                      children: [
+                        Expanded(
+                          child: StatTile(
+                            label: holding.hasManualPrice ? 'Текущая цена' : 'Последняя цена',
+                            icon: Icons.edit_rounded,
+                            text: holding.displayPrice.toStringAsFixed(2),
+                            hint: 'нажми, чтобы уточнить',
+                            color: context.accent,
+                            onTap: () => _showSetPriceDialog(context, ticker, holding),
+                          ),
+                        ),
+                        const SizedBox(width: 10),
+                        Expanded(
+                          child: StatTile(
+                            label: 'Прибыль / убыток',
+                            icon: holding.pnlRub >= 0 ? Icons.trending_up_rounded : Icons.trending_down_rounded,
+                            text: '${Fmt.signedMoney(holding.pnlRub)} · ${Fmt.pct(holding.pnlPct)}',
+                            color: pnlColor,
+                          ),
+                        ),
+                      ],
+                    ),
+                      ),
+                  ),
+                  const SizedBox(height: 14),
                 ],
-              ),
-            ),
-            const SizedBox(height: 24),
-          ],
-          if (incomes.isNotEmpty) ...[
-            Row(
-              mainAxisAlignment: MainAxisAlignment.spaceBetween,
-              children: [
-                const Text('Дивиденды и купоны', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
-                Text(
-                  '+${incomeTotal.toStringAsFixed(0)}',
-                  style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.green),
-                ),
-              ],
-            ),
-            if (dividendForecast != null && dividendForecast.hasHistory) ...[
-              const SizedBox(height: 10),
-              Container(
-                padding: const EdgeInsets.all(12),
-                decoration: BoxDecoration(
-                  color: Colors.green.withOpacity(0.08),
-                  borderRadius: BorderRadius.circular(14),
-                ),
-                child: Row(
-                  children: [
-                    const Icon(Icons.query_stats, color: Colors.green, size: 18),
-                    const SizedBox(width: 8),
-                    Expanded(
-                      child: Text(
-                        'Ожидаемый доход за 12 мес: ~${dividendForecast.last12mRub.toStringAsFixed(0)} ₽ '
-                        '(доходность ~${dividendForecast.yieldPct.toStringAsFixed(1)}%) — по факту прошлых выплат, не гарантия',
-                        style: const TextStyle(fontSize: 11.5, color: Colors.green),
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-            ],
-            const SizedBox(height: 8),
-            ...incomes.map((i) => Card(
-                  elevation: 0,
-                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
-                  color: Theme.of(context).colorScheme.surfaceContainerLow,
-                  margin: const EdgeInsets.symmetric(vertical: 4),
-                  child: ListTile(
-                    leading: Icon(
-                      i.type == IncomeType.dividend ? Icons.trending_up : Icons.receipt_long,
-                      color: Colors.green,
-                    ),
-                    title: Text(i.type == IncomeType.dividend ? 'Дивиденд' : 'Купон'),
-                    subtitle: Text(dateFormat.format(i.date)),
+
+                if (openLots.isNotEmpty) ...[
+                  _ldvCard(openLots),
+                  const SizedBox(height: 14),
+                ],
+
+                _priceHistoryCard(priceHistory, ticker),
+
+                if (incomes.isNotEmpty) ...[
+                  const SizedBox(height: 22),
+                  SectionTitle(
+                    title: 'Дивиденды и купоны',
+                    subtitle: '${incomes.length} ${Fmt.payouts(incomes.length)}',
                     trailing: Text(
-                      '+${i.amountNet.toStringAsFixed(2)} ${i.currency}',
-                      style: const TextStyle(color: Colors.green, fontWeight: FontWeight.w600),
+                      Fmt.signedMoney(incomeTotal),
+                      style: const TextStyle(fontWeight: FontWeight.w800, color: AppColors.positive),
                     ),
                   ),
-                )),
-            const SizedBox(height: 24),
-          ],
-          const Text('Сделки по этой бумаге', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
-          const SizedBox(height: 8),
-          ...purchases.map((p) {
-            final tax = p.isSell ? taxBreakdown[p.id] : null;
-            return Card(
-              elevation: 0,
-              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
-              color: Theme.of(context).colorScheme.surfaceContainerLow,
-              margin: const EdgeInsets.symmetric(vertical: 4),
-              child: ListTile(
-                leading: Icon(
-                  p.isSell ? Icons.arrow_upward : Icons.arrow_downward,
-                  color: p.isSell ? Colors.red : Colors.green,
+                  if (forecast != null && forecast.hasHistory) ...[
+                    InfoBanner(
+                      icon: Icons.auto_graph_rounded,
+                      color: AppColors.violet,
+                      text: 'Ожидаемый доход за 12 мес: ~${Fmt.money(forecast.last12mRub)} '
+                          '(доходность ~${forecast.yieldPct.toStringAsFixed(1)}%) — по прошлым выплатам, не гарантия',
+                    ),
+                    const SizedBox(height: 10),
+                  ],
+                  ...incomes.map((i) => Padding(
+                        padding: const EdgeInsets.only(bottom: 8),
+                        child: AppCard(
+                          padding: const EdgeInsets.all(13),
+                          child: Row(
+                            children: [
+                              Container(
+                                width: 36,
+                                height: 36,
+                                decoration: BoxDecoration(
+                                  borderRadius: BorderRadius.circular(11),
+                                  color: AppColors.positive.withOpacity(0.14),
+                                ),
+                                child: Icon(
+                                  i.type == IncomeType.dividend
+                                      ? Icons.trending_up_rounded
+                                      : Icons.receipt_long_rounded,
+                                  size: 18,
+                                  color: AppColors.positive,
+                                ),
+                              ),
+                              const SizedBox(width: 12),
+                              Expanded(
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    Text(
+                                      i.type == IncomeType.dividend ? 'Дивиденд' : 'Купон',
+                                      style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 13.5),
+                                    ),
+                                    const SizedBox(height: 2),
+                                    Text(
+                                      Fmt.date(i.date),
+                                      style: TextStyle(fontSize: 11.5, color: context.dim),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                              Text(
+                                '+${i.amountNet.toStringAsFixed(2)} ${i.currency == 'RUB' ? '₽' : i.currency}',
+                                style: const TextStyle(
+                                  fontWeight: FontWeight.w800,
+                                  fontSize: 13.5,
+                                  color: AppColors.positive,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      )),
+                ],
+
+                const SizedBox(height: 22),
+                SectionTitle(
+                  title: 'Сделки по бумаге',
+                  subtitle: '${purchases.length} ${Fmt.deals(purchases.length)}',
                 ),
-                title: Text(
-                    '${p.isSell ? "Продажа" : "Покупка"} • ${p.quantity.toStringAsFixed(p.quantity == p.quantity.roundToDouble() ? 0 : 2)} шт × ${p.pricePerUnit}'),
-                subtitle: Text(
-                  tax != null ? '${dateFormat.format(p.date)}${_taxLine(tax)}' : dateFormat.format(p.date),
-                ),
-                isThreeLine: tax != null && tax.realizedGainRub > 0,
-                trailing: Text(
-                  '${p.isSell ? "+" : "-"}${p.total.toStringAsFixed(0)} ${p.currency}',
-                  style: TextStyle(color: p.isSell ? Colors.red : null, fontWeight: FontWeight.w600),
-                ),
-              ),
-            );
-          }),
+                if (purchases.isEmpty)
+                  Text('Сделок по этой бумаге пока нет', style: TextStyle(fontSize: 13, color: context.dim))
+                else
+                  ...purchases.map((p) => Padding(
+                        padding: const EdgeInsets.only(bottom: 8),
+                        child: _tradeRow(p, p.isSell ? taxBreakdown[p.id] : null),
+                      )),
+              ]),
+            ),
+          ),
         ],
       ),
       bottomNavigationBar: SafeArea(
@@ -301,29 +225,20 @@ class _TickerDetailScreenState extends State<TickerDetailScreen> {
           child: Row(
             children: [
               Expanded(
-                child: OutlinedButton.icon(
-                  style: OutlinedButton.styleFrom(
-                    foregroundColor: Colors.red,
-                    side: const BorderSide(color: Colors.red),
-                    padding: const EdgeInsets.symmetric(vertical: 14),
-                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
-                  ),
+                child: GradientButton(
+                  label: 'Продать',
+                  icon: Icons.arrow_upward_rounded,
+                  colors: const [Color(0xFFE23A5B), Color(0xFFFF6B85)],
                   onPressed: () => _quickTradeSheet(context, ticker, name, true),
-                  icon: const Icon(Icons.arrow_downward, size: 18),
-                  label: const Text('Продать'),
                 ),
               ),
               const SizedBox(width: 12),
               Expanded(
-                child: FilledButton.icon(
-                  style: FilledButton.styleFrom(
-                    backgroundColor: Colors.green,
-                    padding: const EdgeInsets.symmetric(vertical: 14),
-                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
-                  ),
+                child: GradientButton(
+                  label: 'Купить',
+                  icon: Icons.arrow_downward_rounded,
+                  colors: const [Color(0xFF0FA97E), Color(0xFF16D796)],
                   onPressed: () => _quickTradeSheet(context, ticker, name, false),
-                  icon: const Icon(Icons.arrow_upward, size: 18),
-                  label: const Text('Купить'),
                 ),
               ),
             ],
@@ -333,30 +248,138 @@ class _TickerDetailScreenState extends State<TickerDetailScreen> {
     );
   }
 
-  Widget _buildManualPriceHistoryCard(BuildContext context, String ticker) {
-    final history = ManualPriceService.historyFor(ticker);
-    final dateFormat = DateFormat('dd.MM.yyyy');
-    final primary = Theme.of(context).colorScheme.primary;
+  /// Шапка-«обложка»: аватарка бумаги, название, сектор и крупная текущая
+  /// цена. При прокрутке сжимается в обычный компактный заголовок.
+  Widget _appBar(
+    BuildContext context,
+    String ticker,
+    String name,
+    String sector,
+    HoldingInfo? holding,
+    Color pnlColor,
+  ) {
+    final accent = context.accent;
+    final isFav = FavoritesService.isFavorite(ticker);
 
-    if (history.isEmpty) {
-      return Container(
-        padding: const EdgeInsets.all(14),
-        decoration: BoxDecoration(
-          color: Theme.of(context).colorScheme.surfaceContainerLow,
-          borderRadius: BorderRadius.circular(16),
+    return SliverAppBar(
+      pinned: true,
+      expandedHeight: 244,
+      backgroundColor: context.isDark ? AppColors.darkBg : AppColors.lightBg,
+      surfaceTintColor: Colors.transparent,
+      title: Text(ticker, style: const TextStyle(fontWeight: FontWeight.w800)),
+      actions: [
+        IconButton(
+          tooltip: isFav ? 'Убрать из избранного' : 'В избранное',
+          icon: Icon(
+            isFav ? Icons.star_rounded : Icons.star_border_rounded,
+            color: isFav ? AppColors.gold : null,
+          ),
+          onPressed: () async {
+            await FavoritesService.toggle(ticker);
+            if (mounted) setState(() {});
+          },
         ),
-        child: Row(
+        IconButton(
+          tooltip: 'Иконка бумаги',
+          icon: const Icon(Icons.image_outlined),
+          onPressed: () => _showLogoOptions(context, ticker),
+        ),
+      ],
+      flexibleSpace: FlexibleSpaceBar(
+        background: Stack(
+          fit: StackFit.expand,
           children: [
-            Icon(Icons.show_chart, color: Colors.grey.shade500, size: 20),
-            const SizedBox(width: 10),
-            Expanded(
-              child: Text(
-                'Пока нет истории ручных цен — укажи текущую цену ниже, и здесь появится график её изменения по датам.',
-                style: TextStyle(fontSize: 12, color: Colors.grey.shade500),
+            DecoratedBox(
+              decoration: BoxDecoration(
+                gradient: LinearGradient(
+                  begin: Alignment.topLeft,
+                  end: Alignment.bottomRight,
+                  colors: [
+                    accent.withOpacity(context.isDark ? 0.34 : 0.20),
+                    (context.isDark ? AppColors.darkBg : AppColors.lightBg).withOpacity(0.1),
+                  ],
+                ),
+              ),
+            ),
+            SafeArea(
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(20, 56, 20, 16),
+                child: Column(
+                  mainAxisAlignment: MainAxisAlignment.end,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      children: [
+                        GestureDetector(
+                          onTap: () => _pickLogo(context, ticker),
+                          onLongPress: () => _showLogoOptions(context, ticker),
+                          child: Hero(tag: 'logo-$ticker', child: TickerAvatar(ticker: ticker, size: 56)),
+                        ),
+                        const SizedBox(width: 14),
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                name,
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: Theme.of(context).textTheme.titleLarge,
+                              ),
+                              const SizedBox(height: 4),
+                              TagChip(text: sector, color: accent, fontSize: 10),
+                            ],
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 18),
+                    if (holding != null)
+                      Row(
+                        crossAxisAlignment: CrossAxisAlignment.end,
+                        children: [
+                          RollingNumber(
+                            value: holding.valueRub,
+                            formatter: (v) => Fmt.money(v),
+                            style: const TextStyle(fontSize: 28, fontWeight: FontWeight.w800, letterSpacing: -1),
+                          ),
+                          const SizedBox(width: 10),
+                          Padding(
+                            padding: const EdgeInsets.only(bottom: 4),
+                            child: TagChip(
+                              text: '${Fmt.pct(holding.pnlPct)} · ${Fmt.signedMoney(holding.pnlRub)}',
+                              color: pnlColor,
+                              icon: holding.pnlRub >= 0
+                                  ? Icons.trending_up_rounded
+                                  : Icons.trending_down_rounded,
+                            ),
+                          ),
+                        ],
+                      )
+                    else
+                      Text(
+                        'Бумаги нет в портфеле',
+                        style: TextStyle(fontSize: 13, color: context.dim, fontWeight: FontWeight.w600),
+                      ),
+                  ],
+                ),
               ),
             ),
           ],
         ),
+      ),
+    );
+  }
+
+  /// График цены по датам. Точки берутся из истории ручных цен — туда же
+  /// автоматически попадает цена каждой сделки, так что даже без ручного
+  /// ввода график показывает реальную динамику по сделкам.
+  Widget _priceHistoryCard(List<PricePoint> history, String ticker) {
+    if (history.isEmpty) {
+      return const InfoBanner(
+        icon: Icons.show_chart_rounded,
+        color: AppColors.info,
+        text: 'История цены появится после первой сделки или когда укажешь текущую цену вручную.',
       );
     }
 
@@ -365,80 +388,50 @@ class _TickerDetailScreenState extends State<TickerDetailScreen> {
     final change = history.length > 1 ? last.price - first.price : 0.0;
     final changePct = history.length > 1 && first.price != 0 ? (change / first.price) * 100 : 0.0;
 
-    return Container(
-      padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(
-        color: Theme.of(context).colorScheme.surfaceContainerLow,
-        borderRadius: BorderRadius.circular(20),
-      ),
+    return AppCard(
+      padding: const EdgeInsets.fromLTRB(16, 16, 16, 12),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Row(
-            mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
-              const Text('История цены (вручную)', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14)),
-              if (history.length > 1)
-                Text(
-                  '${change >= 0 ? "+" : ""}${change.toStringAsFixed(2)} (${changePct.toStringAsFixed(1)}%)',
-                  style: TextStyle(
-                    color: change >= 0 ? Colors.green : Colors.red,
-                    fontWeight: FontWeight.w600,
-                    fontSize: 12,
-                  ),
-                ),
-            ],
-          ),
-          const SizedBox(height: 4),
-          Text(
-            history.length > 1
-                ? '${dateFormat.format(first.date)} — ${dateFormat.format(last.date)}'
-                : 'Отметка от ${dateFormat.format(last.date)}',
-            style: TextStyle(color: Colors.grey.shade500, fontSize: 11),
-          ),
-          const SizedBox(height: 12),
-          if (history.length > 1)
-            SizedBox(
-              height: 140,
-              child: LineChart(
-                LineChartData(
-                  gridData: const FlGridData(show: false),
-                  titlesData: const FlTitlesData(show: false),
-                  borderData: FlBorderData(show: false),
-                  lineTouchData: LineTouchData(
-                    touchTooltipData: LineTouchTooltipData(
-                      getTooltipItems: (spots) => spots.map((s) {
-                        final p = history[s.x.toInt()];
-                        return LineTooltipItem(
-                          '${p.price.toStringAsFixed(2)}\n${dateFormat.format(p.date)}',
-                          const TextStyle(color: Colors.white, fontSize: 11),
-                        );
-                      }).toList(),
-                    ),
-                  ),
-                  lineBarsData: [
-                    LineChartBarData(
-                      spots: [for (int i = 0; i < history.length; i++) FlSpot(i.toDouble(), history[i].price)],
-                      isCurved: true,
-                      color: primary,
-                      barWidth: 3,
-                      dotData: FlDotData(
-                        show: true,
-                        getDotPainter: (spot, percent, bar, index) =>
-                            FlDotCirclePainter(radius: 3.5, color: primary, strokeWidth: 0),
-                      ),
-                      belowBarData: BarAreaData(show: true, color: primary.withOpacity(0.15)),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Text('История цены', style: TextStyle(fontWeight: FontWeight.w800, fontSize: 14)),
+                    const SizedBox(height: 2),
+                    Text(
+                      history.length > 1
+                          ? '${Fmt.date(first.date)} — ${Fmt.date(last.date)}'
+                          : 'Отметка от ${Fmt.date(last.date)}',
+                      style: TextStyle(fontSize: 11, color: context.dim),
                     ),
                   ],
                 ),
               ),
+              if (history.length > 1)
+                TagChip(
+                  text: '${change >= 0 ? '+' : ''}${change.toStringAsFixed(2)} · ${Fmt.pct(changePct)}',
+                  color: AppColors.pnl(change),
+                ),
+            ],
+          ),
+          const SizedBox(height: 14),
+          if (history.length > 1)
+            Sparkline(
+              values: history.map((p) => p.price).toList(),
+              color: context.accent,
+              height: 150,
+              tooltipBuilder: (i, v) => '${v.toStringAsFixed(2)}\n${Fmt.date(history[i].date)}',
             )
           else
             Padding(
-              padding: const EdgeInsets.only(top: 4, bottom: 4),
+              padding: const EdgeInsets.symmetric(vertical: 6),
               child: Text(
-                '${last.price.toStringAsFixed(2)} — добавь ещё одну отметку в другой день, чтобы увидеть график',
-                style: TextStyle(color: Colors.grey.shade500, fontSize: 12),
+                '${last.price.toStringAsFixed(2)} — добавь ещё одну отметку в другой день, '
+                'чтобы увидеть график',
+                style: TextStyle(fontSize: 12, color: context.dim),
               ),
             ),
         ],
@@ -446,121 +439,213 @@ class _TickerDetailScreenState extends State<TickerDetailScreen> {
     );
   }
 
-  /// Быстрое добавление покупки/продажи прямо со страницы бумаги — тикер,
-  /// название, тип, валюта и сектор берутся из последней сделки по этой
-  /// бумаге (если она уже есть в портфеле), чтобы не вводить их заново.
-  /// Это укороченный путь; полная форма с несколькими позициями за раз
-  /// по-прежнему на вкладке "Покупки".
+  Widget _ldvCard(List<OpenLotInfo> lots) {
+    final waiting = lots.where((l) => !l.ldvActive).toList();
+    if (waiting.isEmpty) {
+      return const InfoBanner(
+        icon: Icons.verified_rounded,
+        color: AppColors.positive,
+        text: 'Льгота на долгосрочное владение (ЛДВ) действует на всю позицию — '
+            'прибыль с продажи не облагается налогом',
+      );
+    }
+    waiting.sort((a, b) => a.daysUntilLdv.compareTo(b.daysUntilLdv));
+    final nearest = waiting.first;
+    return InfoBanner(
+      icon: Icons.hourglass_bottom_rounded,
+      color: AppColors.warning,
+      text: 'До льготы ЛДВ по части позиции (${Fmt.qty(nearest.qty)} шт) '
+          'осталось ${nearest.daysUntilLdv} дн.',
+    );
+  }
+
+  Widget _tradeRow(Purchase p, SaleTaxResult? tax) {
+    final color = p.isSell ? AppColors.negative : AppColors.positive;
+    return AppCard(
+      padding: const EdgeInsets.all(13),
+      child: Row(
+        children: [
+          Container(
+            width: 36,
+            height: 36,
+            decoration: BoxDecoration(
+              borderRadius: BorderRadius.circular(11),
+              color: color.withOpacity(0.14),
+            ),
+            child: Icon(
+              p.isSell ? Icons.arrow_upward_rounded : Icons.arrow_downward_rounded,
+              size: 18,
+              color: color,
+            ),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  '${p.isSell ? 'Продажа' : 'Покупка'} · ${Fmt.qty(p.quantity)} шт × ${p.pricePerUnit}',
+                  style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 13),
+                ),
+                const SizedBox(height: 2),
+                Text(Fmt.date(p.date), style: TextStyle(fontSize: 11.5, color: context.dim)),
+                if (tax != null && _taxLabel(tax) != null)
+                  Padding(
+                    padding: const EdgeInsets.only(top: 5),
+                    child: TagChip(text: _taxLabel(tax)!, color: AppColors.warning, fontSize: 9.5),
+                  ),
+              ],
+            ),
+          ),
+          Text(
+            '${p.isSell ? '+' : '−'}${Fmt.group(p.total)} ${p.currency == 'RUB' ? '₽' : p.currency}',
+            style: TextStyle(fontWeight: FontWeight.w800, fontSize: 13.5, color: p.isSell ? color : null),
+          ),
+        ],
+      ),
+    );
+  }
+
+  String? _taxLabel(SaleTaxResult r) {
+    if (r.realizedGainRub <= 0) return 'без налога (убыток)';
+    if (r.taxableGainRub <= 0 && r.hasLdvPortion) return 'без налога (ЛДВ)';
+    if (r.taxRub > 0) return 'налог ~${Fmt.money(r.taxRub)}';
+    return null;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Действия
+  // ---------------------------------------------------------------------------
+
+  /// Быстрая сделка прямо со страницы бумаги: тикер, тип, валюта и сектор
+  /// берутся из последней сделки, чтобы не вводить их заново.
   Future<void> _quickTradeSheet(BuildContext context, String ticker, String name, bool isSell) async {
-    final priorPurchases = StorageService.purchases.where((p) => p.ticker == ticker).toList()
+    final prior = StorageService.purchases.where((p) => p.ticker == ticker).toList()
       ..sort((a, b) => b.date.compareTo(a.date));
-    final type = priorPurchases.isNotEmpty ? priorPurchases.first.type : AssetType.stock;
-    final currency = priorPurchases.isNotEmpty ? priorPurchases.first.currency : 'RUB';
-    final sector = priorPurchases.isNotEmpty ? priorPurchases.first.sector : '';
+    final type = prior.isNotEmpty ? prior.first.type : AssetType.stock;
+    final currency = prior.isNotEmpty ? prior.first.currency : 'RUB';
+    final sector = prior.isNotEmpty ? prior.first.sector : '';
 
     final qtyCtrl = TextEditingController();
-    final knownPrice = ManualPriceService.get(ticker) ?? (priorPurchases.isNotEmpty ? priorPurchases.first.pricePerUnit : null);
+    final knownPrice = ManualPriceService.get(ticker) ?? (prior.isNotEmpty ? prior.first.pricePerUnit : null);
     final priceCtrl = TextEditingController(text: knownPrice != null ? knownPrice.toString() : '');
     final feeCtrl = TextEditingController(text: '0');
     final noteCtrl = TextEditingController();
     DateTime date = DateTime.now();
 
-    await showModalBottomSheet(
+    await showAppSheet(
       context: context,
-      isScrollControlled: true,
       builder: (ctx) => StatefulBuilder(
         builder: (ctx, setSheetState) {
-          final keyboardHeight = MediaQuery.of(ctx).viewInsets.bottom;
-          final dateFormat = DateFormat('dd.MM.yyyy');
+          final keyboard = MediaQuery.of(ctx).viewInsets.bottom;
+          final qty = double.tryParse(qtyCtrl.text.replaceAll(',', '.')) ?? 0;
+          final price = double.tryParse(priceCtrl.text.replaceAll(',', '.')) ?? 0;
+          final fee = double.tryParse(feeCtrl.text.replaceAll(',', '.')) ?? 0;
+          final sum = qty * price + (isSell ? -fee : fee);
+
           return SingleChildScrollView(
-            padding: EdgeInsets.only(left: 16, right: 16, top: 16, bottom: keyboardHeight + 16),
+            padding: EdgeInsets.fromLTRB(20, 14, 20, keyboard + 24),
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
-                Text(
-                  isSell ? 'Продать $ticker' : 'Купить $ticker',
-                  style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+                SheetHeader(
+                  title: isSell ? 'Продать $ticker' : 'Купить $ticker',
+                  subtitle: name,
+                  trailing: IconButton(
+                    icon: const Icon(Icons.close_rounded),
+                    onPressed: () => Navigator.pop(ctx),
+                  ),
                 ),
-                const SizedBox(height: 16),
+                const SizedBox(height: 18),
                 Row(
                   children: [
                     Expanded(
-                      child: TextField(
+                      child: AppTextField(
                         controller: qtyCtrl,
+                        label: 'Количество',
+                        number: true,
                         autofocus: true,
-                        keyboardType: const TextInputType.numberWithOptions(decimal: true),
-                        decoration: const InputDecoration(labelText: 'Количество', border: OutlineInputBorder()),
+                        onChanged: (_) => setSheetState(() {}),
                       ),
                     ),
-                    const SizedBox(width: 12),
+                    const SizedBox(width: 10),
                     Expanded(
-                      child: TextField(
+                      child: AppTextField(
                         controller: priceCtrl,
-                        keyboardType: const TextInputType.numberWithOptions(decimal: true),
-                        decoration: InputDecoration(labelText: 'Цена ($currency)', border: const OutlineInputBorder()),
+                        label: 'Цена ($currency)',
+                        number: true,
+                        onChanged: (_) => setSheetState(() {}),
                       ),
                     ),
                   ],
                 ),
                 const SizedBox(height: 12),
-                TextField(
-                  controller: feeCtrl,
-                  keyboardType: const TextInputType.numberWithOptions(decimal: true),
-                  decoration: const InputDecoration(labelText: 'Комиссия', border: OutlineInputBorder()),
-                ),
-                const SizedBox(height: 12),
-                OutlinedButton(
-                  onPressed: () async {
-                    final picked = await showDatePicker(
-                      context: ctx,
-                      initialDate: date,
-                      firstDate: DateTime(2000),
-                      lastDate: DateTime.now(),
-                    );
-                    if (picked != null) setSheetState(() => date = picked);
-                  },
-                  child: Text('Дата: ${dateFormat.format(date)}'),
-                ),
-                const SizedBox(height: 12),
-                TextField(
-                  controller: noteCtrl,
-                  decoration: const InputDecoration(labelText: 'Заметка (необязательно)', border: OutlineInputBorder()),
-                ),
-                if (keyboardHeight == 0) ...[
-                  const SizedBox(height: 20),
-                  FilledButton(
-                    style: FilledButton.styleFrom(backgroundColor: isSell ? Colors.red : Colors.green),
-                    onPressed: () async {
-                      final qty = double.tryParse(qtyCtrl.text.replaceAll(',', '.'));
-                      final price = double.tryParse(priceCtrl.text.replaceAll(',', '.'));
-                      if (qty == null || price == null || qty <= 0 || price <= 0) return;
-                      final fee = double.tryParse(feeCtrl.text.replaceAll(',', '.')) ?? 0;
-                      await StorageService.addPurchase(Purchase(
-                        id: const Uuid().v4(),
-                        date: date,
-                        ticker: ticker,
-                        name: name,
-                        type: type,
-                        quantity: qty,
-                        pricePerUnit: price,
-                        fee: fee,
-                        currency: currency,
-                        sector: sector,
-                        isSell: isSell,
-                        note: noteCtrl.text.isEmpty ? null : noteCtrl.text,
-                      ));
-                      // Цена сделки — реальное наблюдение цены на эту дату,
-                      // фиксируем её и в историю ручных цен (см. purchases_screen).
-                      await ManualPriceService.setAt(ticker, date, price);
-                      if (ctx.mounted) Navigator.pop(ctx);
-                      if (mounted) setState(() {});
-                    },
-                    child: Padding(
-                      padding: const EdgeInsets.symmetric(vertical: 8),
-                      child: Text(isSell ? 'Продать' : 'Купить'),
+                Row(
+                  children: [
+                    Expanded(
+                      child: AppTextField(
+                        controller: feeCtrl,
+                        label: 'Комиссия',
+                        number: true,
+                        onChanged: (_) => setSheetState(() {}),
+                      ),
                     ),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: AppDateField(
+                        value: date,
+                        label: 'Дата',
+                        lastDate: DateTime.now(),
+                        firstDate: DateTime(2000),
+                        onPicked: (d) => setSheetState(() => date = d),
+                      ),
+                    ),
+                  ],
+                ),
+                if (sum > 0) ...[
+                  const SizedBox(height: 12),
+                  InfoBanner(
+                    icon: Icons.calculate_outlined,
+                    color: isSell ? AppColors.negative : AppColors.positive,
+                    text: isSell
+                        ? 'К зачислению примерно ${Fmt.group(sum)} $currency'
+                        : 'Списание примерно ${Fmt.group(sum)} $currency',
                   ),
                 ],
+                const SizedBox(height: 12),
+                AppTextField(controller: noteCtrl, label: 'Заметка (необязательно)'),
+                const SizedBox(height: 22),
+                GradientButton(
+                  label: isSell ? 'Записать продажу' : 'Записать покупку',
+                  icon: Icons.check_rounded,
+                  colors: isSell
+                      ? const [Color(0xFFE23A5B), Color(0xFFFF6B85)]
+                      : const [Color(0xFF0FA97E), Color(0xFF16D796)],
+                  onPressed: () async {
+                    final q = double.tryParse(qtyCtrl.text.replaceAll(',', '.'));
+                    final pr = double.tryParse(priceCtrl.text.replaceAll(',', '.'));
+                    if (q == null || pr == null || q <= 0 || pr <= 0) return;
+                    final f = double.tryParse(feeCtrl.text.replaceAll(',', '.')) ?? 0;
+                    await StorageService.addPurchase(Purchase(
+                      id: const Uuid().v4(),
+                      date: date,
+                      ticker: ticker,
+                      name: name,
+                      type: type,
+                      quantity: q,
+                      pricePerUnit: pr,
+                      fee: f,
+                      currency: currency,
+                      sector: sector,
+                      isSell: isSell,
+                      note: noteCtrl.text.isEmpty ? null : noteCtrl.text,
+                    ));
+                    // Цена сделки — реальное наблюдение цены на эту дату.
+                    await ManualPriceService.setAt(ticker, date, pr);
+                    if (ctx.mounted) Navigator.pop(ctx);
+                    if (mounted) setState(() {});
+                  },
+                ),
               ],
             ),
           );
@@ -574,36 +659,41 @@ class _TickerDetailScreenState extends State<TickerDetailScreen> {
     final picked = await picker.pickImage(source: ImageSource.gallery, maxWidth: 512, maxHeight: 512);
     if (picked == null) return;
     await LogoService.setLogo(ticker, File(picked.path));
-    setState(() {});
+    if (mounted) setState(() {});
   }
 
   Future<void> _showLogoOptions(BuildContext context, String ticker) async {
     final hasLogo = LogoService.getPath(ticker) != null;
-    await showModalBottomSheet(
+    await showAppSheet(
       context: context,
-      shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
       builder: (ctx) => SafeArea(
-        child: Wrap(
-          children: [
-            ListTile(
-              leading: const Icon(Icons.photo_library_outlined),
-              title: Text(hasLogo ? 'Заменить иконку' : 'Загрузить иконку'),
-              onTap: () {
-                Navigator.pop(ctx);
-                _pickLogo(context, ticker);
-              },
-            ),
-            if (hasLogo)
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(20, 14, 20, 20),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const SheetHeader(title: 'Иконка бумаги', subtitle: 'Своя картинка вместо инициалов'),
+              const SizedBox(height: 12),
               ListTile(
-                leading: const Icon(Icons.delete_outline, color: Colors.red),
-                title: const Text('Удалить иконку', style: TextStyle(color: Colors.red)),
-                onTap: () async {
+                leading: const Icon(Icons.photo_library_outlined),
+                title: Text(hasLogo ? 'Заменить иконку' : 'Загрузить иконку'),
+                onTap: () {
                   Navigator.pop(ctx);
-                  await LogoService.removeLogo(ticker);
-                  if (mounted) setState(() {});
+                  _pickLogo(context, ticker);
                 },
               ),
-          ],
+              if (hasLogo)
+                ListTile(
+                  leading: const Icon(Icons.delete_outline_rounded, color: AppColors.negative),
+                  title: const Text('Удалить иконку', style: TextStyle(color: AppColors.negative)),
+                  onTap: () async {
+                    Navigator.pop(ctx);
+                    await LogoService.removeLogo(ticker);
+                    if (mounted) setState(() {});
+                  },
+                ),
+            ],
+          ),
         ),
       ),
     );
@@ -623,16 +713,16 @@ class _TickerDetailScreenState extends State<TickerDetailScreen> {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Text(
-              'Приложение офлайн и не тянет котировки, поэтому по умолчанию используется цена последней сделки. '
-              'Укажи актуальную цену вручную, чтобы стоимость портфеля и графики пересчитались честно.',
-              style: TextStyle(color: Colors.grey.shade500, fontSize: 12),
+              'Приложение офлайн и не тянет котировки, поэтому по умолчанию берётся цена последней '
+              'сделки. Укажи актуальную цену вручную — стоимость портфеля и графики пересчитаются честно.',
+              style: TextStyle(color: context.dim, fontSize: 12, height: 1.4),
             ),
-            const SizedBox(height: 12),
-            TextField(
+            const SizedBox(height: 14),
+            AppTextField(
               controller: ctrl,
+              label: 'Цена, ${holding.currency}',
+              number: true,
               autofocus: true,
-              keyboardType: const TextInputType.numberWithOptions(decimal: true),
-              decoration: InputDecoration(labelText: 'Цена, ${holding.currency}', border: const OutlineInputBorder()),
             ),
           ],
         ),
@@ -642,7 +732,7 @@ class _TickerDetailScreenState extends State<TickerDetailScreen> {
               onPressed: () async {
                 await ManualPriceService.clear(ticker);
                 if (ctx.mounted) Navigator.pop(ctx);
-                setState(() {});
+                if (mounted) setState(() {});
               },
               child: const Text('Сбросить'),
             ),
@@ -653,90 +743,12 @@ class _TickerDetailScreenState extends State<TickerDetailScreen> {
               if (price == null || price <= 0) return;
               await ManualPriceService.set(ticker, price);
               if (ctx.mounted) Navigator.pop(ctx);
-              setState(() {});
+              if (mounted) setState(() {});
             },
             child: const Text('Сохранить'),
           ),
         ],
       ),
-    );
-  }
-
-  String _taxLine(SaleTaxResult tax) {
-    if (tax.realizedGainRub <= 0) return '\nБез налога (убыток)';
-    if (tax.taxableGainRub <= 0 && tax.hasLdvPortion) return '\nБез налога (ЛДВ)';
-    if (tax.taxRub > 0) return '\nНалог: ~${tax.taxRub.toStringAsFixed(0)} ₽';
-    return '';
-  }
-
-  Widget _buildLdvCard(BuildContext context, List<OpenLotInfo> lots) {
-    final waiting = lots.where((l) => !l.ldvActive).toList();
-    if (waiting.isEmpty) {
-      return Container(
-        padding: const EdgeInsets.all(12),
-        decoration: BoxDecoration(
-          color: Colors.green.withOpacity(0.1),
-          borderRadius: BorderRadius.circular(14),
-        ),
-        child: Row(
-          children: [
-            const Icon(Icons.verified, color: Colors.green, size: 20),
-            const SizedBox(width: 8),
-            const Expanded(
-              child: Text(
-                'Льгота на долгосрочное владение (ЛДВ) уже действует на всю позицию — прибыль с продажи не облагается налогом',
-                style: TextStyle(fontSize: 12, color: Colors.green),
-              ),
-            ),
-          ],
-        ),
-      );
-    }
-    waiting.sort((a, b) => a.daysUntilLdv.compareTo(b.daysUntilLdv));
-    final nearest = waiting.first;
-    return Container(
-      padding: const EdgeInsets.all(12),
-      decoration: BoxDecoration(
-        color: Colors.orange.withOpacity(0.1),
-        borderRadius: BorderRadius.circular(14),
-      ),
-      child: Row(
-        children: [
-          const Icon(Icons.hourglass_bottom, color: Colors.orange, size: 20),
-          const SizedBox(width: 8),
-          Expanded(
-            child: Text(
-              'До льготы ЛДВ по части позиции (${nearest.qty.toStringAsFixed(nearest.qty == nearest.qty.roundToDouble() ? 0 : 2)} шт) осталось ${nearest.daysUntilLdv} дн.',
-              style: const TextStyle(fontSize: 12, color: Colors.orange),
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _statCard(BuildContext context, String label, String value, {Color? valueColor}) {
-    return TweenAnimationBuilder<double>(
-      duration: const Duration(milliseconds: 350),
-      curve: Curves.easeOut,
-      tween: Tween(begin: .96, end: 1),
-      builder: (context, scale, child) => Transform.scale(scale: scale, child: child),
-      child: Card(
-      elevation: 0,
-      color: Theme.of(context).colorScheme.surfaceContainerLow,
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(18)),
-      child: Padding(
-        padding: const EdgeInsets.all(12),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(label.toUpperCase(), style: TextStyle(fontSize: 9.5, fontWeight: FontWeight.w700, letterSpacing: .5, color: Colors.grey.shade500)),
-            const SizedBox(height: 4),
-            Text(value, style: TextStyle(fontWeight: FontWeight.w800, fontSize: 14, color: valueColor)),
-          ],
-        ),
-      ),
-    ),
     );
   }
 }

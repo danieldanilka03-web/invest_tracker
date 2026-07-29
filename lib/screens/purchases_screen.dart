@@ -1,14 +1,23 @@
 import 'package:flutter/material.dart';
-import 'package:intl/intl.dart';
 import 'package:uuid/uuid.dart';
-import '../models/purchase.dart';
+import '../design/fields.dart';
+import '../design/format.dart';
+import '../design/motion.dart';
+import '../design/surfaces.dart';
+import '../design/tokens.dart';
 import '../models/plan.dart';
-import '../services/storage_service.dart';
+import '../models/purchase.dart';
 import '../services/analytics_service.dart';
-import '../services/tax_service.dart';
 import '../services/manual_price_service.dart';
-import '../widgets/ticker_avatar.dart';
+import '../services/storage_service.dart';
+import '../services/tax_service.dart';
 import '../widgets/security_picker_field.dart';
+import '../widgets/ticker_avatar.dart';
+import 'home_screen.dart';
+import 'ticker_detail_screen.dart';
+
+/// Фильтр по типу операции.
+enum _OpFilter { all, buy, sell }
 
 class PurchasesScreen extends StatefulWidget {
   const PurchasesScreen({super.key});
@@ -18,410 +27,547 @@ class PurchasesScreen extends StatefulWidget {
 }
 
 class _PurchasesScreenState extends State<PurchasesScreen> {
-  final _dateFormat = DateFormat('dd.MM.yyyy');
-  AssetType? _filterType;
-  bool? _filterIsSell; // null = все, false = только покупки, true = только продажи
+  final _searchCtrl = TextEditingController();
+  _OpFilter _op = _OpFilter.all;
+  AssetType? _type;
+  String _query = '';
 
   @override
   void initState() {
     super.initState();
     // Экран живёт в IndexedStack и не пересоздаётся при переключении вкладок,
-    // поэтому переключение портфеля (сделанное на экране "Настройки") без
-    // этого слушателя не обновило бы список — данные читаются заново из
-    // уже переоткрытых боксов только при перерисовке.
+    // поэтому без слушателя смена портфеля не обновила бы список.
     StorageService.dataVersion.addListener(_onDataChanged);
   }
 
   @override
   void dispose() {
     StorageService.dataVersion.removeListener(_onDataChanged);
+    _searchCtrl.dispose();
     super.dispose();
   }
 
-  void _onDataChanged() => setState(() {});
+  void _onDataChanged() {
+    if (mounted) setState(() {});
+  }
 
-  String _typeLabel(AssetType t) {
-    switch (t) {
-      case AssetType.stock:
-        return 'Акция';
-      case AssetType.bond:
-        return 'Облигация';
-      case AssetType.etf:
-        return 'Фонд';
-      case AssetType.currency:
-        return 'Валюта';
-      case AssetType.other:
-        return 'Другое';
+  List<Purchase> get _filtered {
+    var list = StorageService.purchases..sort((a, b) => b.date.compareTo(a.date));
+    if (_op != _OpFilter.all) {
+      final wantSell = _op == _OpFilter.sell;
+      list = list.where((p) => p.isSell == wantSell).toList();
     }
+    if (_type != null) list = list.where((p) => p.type == _type).toList();
+    if (_query.trim().isNotEmpty) {
+      final q = _query.trim().toLowerCase();
+      list = list
+          .where((p) => p.ticker.toLowerCase().contains(q) || p.name.toLowerCase().contains(q))
+          .toList();
+    }
+    return list;
   }
 
   @override
   Widget build(BuildContext context) {
-    var purchases = StorageService.purchases..sort((a, b) => b.date.compareTo(a.date));
-    if (_filterType != null) {
-      purchases = purchases.where((p) => p.type == _filterType).toList();
-    }
-    if (_filterIsSell != null) {
-      purchases = purchases.where((p) => p.isSell == _filterIsSell).toList();
-    }
+    final purchases = _filtered;
     final taxBreakdown = TaxService.enabled ? TaxService.saleTaxBreakdown() : <String, SaleTaxResult>{};
 
+    final bought = purchases.where((p) => !p.isSell).fold(0.0, (s, p) => s + p.total);
+    final sold = purchases.where((p) => p.isSell).fold(0.0, (s, p) => s + p.total);
+
     return Scaffold(
-      appBar: AppBar(title: const Text('Сделки')),
-      body: Column(
-        children: [
-          SizedBox(
-            height: 48,
-            child: ListView(
-              scrollDirection: Axis.horizontal,
-              padding: const EdgeInsets.symmetric(horizontal: 12),
-              children: [
-                _opChip(null, 'Все операции'),
-                _opChip(false, 'Покупки'),
-                _opChip(true, 'Продажи'),
-              ],
-            ),
-          ),
-          SizedBox(
-            height: 48,
-            child: ListView(
-              scrollDirection: Axis.horizontal,
-              padding: const EdgeInsets.symmetric(horizontal: 12),
-              children: [
-                _filterChip(null, 'Все'),
-                ...AssetType.values.map((t) => _filterChip(t, _typeLabel(t))),
-              ],
-            ),
-          ),
-          Expanded(
-            child: purchases.isEmpty
-                ? _emptyState()
-                : ListView.builder(
-                    padding: const EdgeInsets.fromLTRB(12, 6, 12, 96),
-                    itemCount: purchases.length,
-                    itemBuilder: (context, i) {
-                      final p = purchases[i];
-                      return Dismissible(
-                        key: Key(p.id),
-                        direction: DismissDirection.endToStart,
-                        confirmDismiss: (_) => _confirmDelete(context),
-                        background: Container(
-                          margin: const EdgeInsets.symmetric(vertical: 4),
-                          decoration: BoxDecoration(
-                            color: Colors.red.shade400,
-                            borderRadius: BorderRadius.circular(16),
-                          ),
-                          alignment: Alignment.centerRight,
-                          padding: const EdgeInsets.only(right: 20),
-                          child: const Icon(Icons.delete, color: Colors.white),
+      body: SafeArea(
+        bottom: false,
+        child: Column(
+          children: [
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 8, 16, 0),
+              child: Column(
+                children: [
+                  Row(
+                    children: [
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text('Сделки', style: Theme.of(context).textTheme.headlineMedium),
+                            const SizedBox(height: 2),
+                            Text(
+                              '${purchases.length} ${Fmt.deals(purchases.length)} в списке',
+                              style: TextStyle(fontSize: 12, color: context.dim),
+                            ),
+                          ],
                         ),
-                        onDismissed: (_) {
-                          StorageService.deletePurchase(p.id);
-                          setState(() {});
-                        },
-                        child: Card(
-                          margin: const EdgeInsets.symmetric(vertical: 5, horizontal: 4),
-                          elevation: 0,
-                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
-                          color: Theme.of(context).colorScheme.surfaceContainerLow,
-                          child: ListTile(
-                            contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-                            leading: TickerAvatar(ticker: p.ticker),
-                            title: Row(
-                              children: [
-                                Expanded(
-                                  child: Text('${p.ticker} · ${p.name}',
-                                      style: const TextStyle(fontWeight: FontWeight.w600), overflow: TextOverflow.ellipsis),
-                                ),
-                                if (p.isSell)
-                                  Container(
-                                    padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                                    decoration: BoxDecoration(
-                                      color: Colors.red.withOpacity(0.12),
-                                      borderRadius: BorderRadius.circular(6),
-                                    ),
-                                    child: const Text('Продажа', style: TextStyle(fontSize: 10, color: Colors.red, fontWeight: FontWeight.bold)),
-                                  ),
-                              ],
-                            ),
-                            subtitle: Text(
-                              '${_dateFormat.format(p.date)} • ${p.quantity.toStringAsFixed(p.quantity == p.quantity.roundToDouble() ? 0 : 2)} шт × ${p.pricePerUnit}\n'
-                              '${_typeLabel(p.type)}${p.sector != null ? ' • ${p.sector}' : ''}'
-                              '${p.isSell && taxBreakdown[p.id] != null ? _taxSubtitle(taxBreakdown[p.id]!) : ''}'
-                              '${p.note?.isNotEmpty == true ? '\n${p.note}' : ''}',
-                            ),
-                            isThreeLine: true,
-                            trailing: Text(
-                              '${p.isSell ? "+" : "-"}${p.total.toStringAsFixed(0)} ${p.currency}',
-                              style: TextStyle(
-                                fontWeight: FontWeight.bold,
-                                color: p.isSell ? Colors.red : Theme.of(context).colorScheme.primary,
+                      ),
+                      if (bought > 0 || sold > 0)
+                        Column(
+                          crossAxisAlignment: CrossAxisAlignment.end,
+                          children: [
+                            if (bought > 0)
+                              Text(
+                                '− ${Fmt.money(bought)}',
+                                style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w800),
                               ),
-                            ),
-                          ),
+                            if (sold > 0)
+                              Padding(
+                                padding: const EdgeInsets.only(top: 2),
+                                child: Text(
+                                  '+ ${Fmt.money(sold)}',
+                                  style: const TextStyle(
+                                    fontSize: 13,
+                                    fontWeight: FontWeight.w800,
+                                    color: AppColors.negative,
+                                  ),
+                                ),
+                              ),
+                          ],
                         ),
-                      );
-                    },
+                    ],
                   ),
-          ),
-        ],
+                  const SizedBox(height: 14),
+                  AppSearchField(
+                    controller: _searchCtrl,
+                    hint: 'Поиск по тикеру или названию',
+                    onChanged: (v) => setState(() => _query = v),
+                  ),
+                  const SizedBox(height: 12),
+                  PillTabs<_OpFilter>(
+                    values: _OpFilter.values,
+                    selected: _op,
+                    labelOf: (o) => switch (o) {
+                      _OpFilter.all => 'Все операции',
+                      _OpFilter.buy => 'Покупки',
+                      _OpFilter.sell => 'Продажи',
+                    },
+                    iconOf: (o) => switch (o) {
+                      _OpFilter.all => Icons.all_inclusive_rounded,
+                      _OpFilter.buy => Icons.add_shopping_cart_rounded,
+                      _OpFilter.sell => Icons.sell_outlined,
+                    },
+                    onChanged: (o) => setState(() => _op = o),
+                  ),
+                  const SizedBox(height: 8),
+                  PillTabs<AssetType?>(
+                    values: <AssetType?>[null, ...AssetType.values],
+                    selected: _type,
+                    labelOf: (t) => t == null ? 'Все типы' : Fmt.assetTypeShort(t),
+                    onChanged: (t) => setState(() => _type = t),
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 10),
+            Expanded(
+              child: purchases.isEmpty
+                  ? EmptyState(
+                      icon: Icons.swap_horiz_rounded,
+                      title: StorageService.purchases.isEmpty ? 'Сделок ещё нет' : 'Ничего не найдено',
+                      subtitle: StorageService.purchases.isEmpty
+                          ? 'Нажми «Сделка», чтобы записать покупку или продажу — можно сразу несколько бумаг за раз.'
+                          : 'Попробуй изменить фильтры или поисковый запрос.',
+                    )
+                  : _buildList(purchases, taxBreakdown),
+            ),
+          ],
+        ),
       ),
       floatingActionButton: FloatingActionButton.extended(
         onPressed: () => _showAddTradeSheet(context),
-        icon: const Icon(Icons.add),
-        label: const Text('Сделка'),
+        icon: const Icon(Icons.add_rounded),
+        label: const Text('Сделка', style: TextStyle(fontWeight: FontWeight.w700)),
       ),
     );
   }
 
-  Future<void> _checkPlansForTickers(BuildContext context, Set<String> tickers) async {
-    if (tickers.isEmpty) return;
-    final matchingPlans = StorageService.plans
-        .where((p) => p.status == PlanStatus.active && tickers.contains(p.ticker.toUpperCase()))
-        .toList();
-    for (final plan in matchingPlans) {
-      if (!context.mounted) return;
-      final confirm = await showDialog<bool>(
-        context: context,
-        builder: (ctx) => AlertDialog(
-          title: const Text('Есть активный план'),
-          content: Text('У тебя есть план на покупку ${plan.ticker} — отметить его выполненным?'),
-          actions: [
-            TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Не сейчас')),
-            FilledButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Отметить выполненным')),
+  /// Список сделок с разделителями по месяцам — так проще искать глазами
+  /// «что я делал в марте», чем в сплошной ленте.
+  Widget _buildList(List<Purchase> purchases, Map<String, SaleTaxResult> tax) {
+    final items = <Widget>[];
+    String? lastMonth;
+    for (int i = 0; i < purchases.length; i++) {
+      final p = purchases[i];
+      final key = '${p.date.year}-${p.date.month.toString().padLeft(2, '0')}';
+      if (key != lastMonth) {
+        lastMonth = key;
+        items.add(Padding(
+          padding: EdgeInsets.only(top: items.isEmpty ? 0 : 18, bottom: 10, left: 4),
+          child: Text(
+            Fmt.monthTitle(key),
+            style: TextStyle(fontSize: 12, fontWeight: FontWeight.w800, letterSpacing: 0.3, color: context.dim),
+          ),
+        ));
+      }
+      items.add(Padding(
+        padding: const EdgeInsets.only(bottom: 8),
+        child: FadeSlideIn.staggered(index: i, child: _tradeCard(p, tax[p.id])),
+      ));
+    }
+    items.add(const SizedBox(height: kListBottomPadding));
+
+    return ListView(
+      padding: const EdgeInsets.fromLTRB(16, 4, 16, 0),
+      physics: const BouncingScrollPhysics(parent: AlwaysScrollableScrollPhysics()),
+      children: items,
+    );
+  }
+
+  Widget _tradeCard(Purchase p, SaleTaxResult? tax) {
+    final color = p.isSell ? AppColors.negative : AppColors.positive;
+    return Dismissible(
+      key: Key(p.id),
+      direction: DismissDirection.endToStart,
+      confirmDismiss: (_) => _confirmDelete(context),
+      background: Container(
+        decoration: BoxDecoration(
+          borderRadius: AppRadius.all(AppRadius.md),
+          gradient: LinearGradient(
+            colors: [AppColors.negative.withOpacity(0.15), AppColors.negative],
+          ),
+        ),
+        alignment: Alignment.centerRight,
+        padding: const EdgeInsets.only(right: 22),
+        child: const Icon(Icons.delete_outline_rounded, color: Colors.white),
+      ),
+      onDismissed: (_) {
+        StorageService.deletePurchase(p.id);
+        setState(() {});
+      },
+      child: AppCard(
+        padding: const EdgeInsets.all(13),
+        onTap: () => Navigator.push(
+          context,
+          AppPageRoute(builder: (_) => TickerDetailScreen(ticker: p.ticker)),
+        ),
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Stack(
+              clipBehavior: Clip.none,
+              children: [
+                TickerAvatar(ticker: p.ticker, size: 42),
+                Positioned(
+                  right: -3,
+                  bottom: -3,
+                  child: Container(
+                    padding: const EdgeInsets.all(3),
+                    decoration: BoxDecoration(
+                      color: context.isDark ? AppColors.darkSurface : Colors.white,
+                      shape: BoxShape.circle,
+                    ),
+                    child: Container(
+                      padding: const EdgeInsets.all(2),
+                      decoration: BoxDecoration(color: color, shape: BoxShape.circle),
+                      child: Icon(
+                        p.isSell ? Icons.arrow_upward_rounded : Icons.arrow_downward_rounded,
+                        size: 9,
+                        color: Colors.white,
+                      ),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(width: 13),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      Flexible(
+                        child: Text(
+                          p.ticker,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(fontSize: 14.5, fontWeight: FontWeight.w800),
+                        ),
+                      ),
+                      const SizedBox(width: 6),
+                      TagChip(
+                        text: p.isSell ? 'Продажа' : 'Покупка',
+                        color: color,
+                        fontSize: 9.5,
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 2),
+                  Text(
+                    p.name,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(fontSize: 12, color: context.dim, fontWeight: FontWeight.w600),
+                  ),
+                  const SizedBox(height: 6),
+                  Text(
+                    '${Fmt.date(p.date)} · ${Fmt.qty(p.quantity)} шт × ${p.pricePerUnit}'
+                    '${p.fee > 0 ? ' · комиссия ${Fmt.qty(p.fee)}' : ''}',
+                    style: TextStyle(fontSize: 11.3, color: context.dim, fontWeight: FontWeight.w600),
+                  ),
+                  if (p.sector != null && p.sector!.isNotEmpty)
+                    Padding(
+                      padding: const EdgeInsets.only(top: 3),
+                      child: Text(
+                        '${Fmt.assetType(p.type)} · ${p.sector}',
+                        style: TextStyle(fontSize: 11, color: context.dim),
+                      ),
+                    ),
+                  if (tax != null && _taxLabel(tax) != null)
+                    Padding(
+                      padding: const EdgeInsets.only(top: 6),
+                      child: TagChip(text: _taxLabel(tax)!, color: AppColors.warning, fontSize: 9.5),
+                    ),
+                  if (p.note != null && p.note!.isNotEmpty)
+                    Padding(
+                      padding: const EdgeInsets.only(top: 6),
+                      child: Text(
+                        p.note!,
+                        style: TextStyle(fontSize: 11.3, fontStyle: FontStyle.italic, color: context.dim),
+                      ),
+                    ),
+                ],
+              ),
+            ),
+            const SizedBox(width: 8),
+            Text(
+              '${p.isSell ? '+' : '−'}${Fmt.group(p.total)} ${p.currency == 'RUB' ? '₽' : p.currency}',
+              style: TextStyle(
+                fontSize: 14,
+                fontWeight: FontWeight.w800,
+                color: p.isSell ? AppColors.negative : null,
+              ),
+            ),
           ],
         ),
-      );
-      if (confirm == true) {
-        plan.status = PlanStatus.done;
-        await StorageService.updatePlan(plan);
-      }
-    }
+      ),
+    );
+  }
+
+  String? _taxLabel(SaleTaxResult r) {
+    if (r.realizedGainRub <= 0) return 'без налога (убыток)';
+    if (r.taxableGainRub <= 0 && r.hasLdvPortion) return 'без налога (ЛДВ)';
+    if (r.taxRub > 0) return 'налог ~${Fmt.money(r.taxRub)}';
+    return null;
   }
 
   Future<bool> _confirmDelete(BuildContext context) async {
     return await showDialog<bool>(
           context: context,
           builder: (ctx) => AlertDialog(
-            title: const Text('Удалить покупку?'),
+            title: const Text('Удалить сделку?'),
             content: const Text('Запись будет удалена без возможности восстановления.'),
             actions: [
               TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Отмена')),
-              FilledButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Удалить')),
+              FilledButton(
+                style: FilledButton.styleFrom(backgroundColor: AppColors.negative),
+                onPressed: () => Navigator.pop(ctx, true),
+                child: const Text('Удалить'),
+              ),
             ],
           ),
         ) ??
         false;
   }
 
-  String _taxSubtitle(SaleTaxResult r) {
-    if (r.realizedGainRub <= 0) return ' • без налога (убыток)';
-    if (r.taxableGainRub <= 0 && r.hasLdvPortion) return ' • без налога (ЛДВ)';
-    if (r.taxRub > 0) return ' • налог: ~${r.taxRub.toStringAsFixed(0)} ₽';
-    return '';
+  /// Если для позиции-покупки отмечена галка «Учитывать в ближайшем плане
+  /// этого месяца» — находит ближайший (по дате) активный план ЭТОГО
+  /// календарного месяца на этот тикер и записывает в него накопленное
+  /// купленное количество и среднюю цену. При достижении цели план сразу
+  /// отмечается выполненным.
+  Future<void> _applyToNearestPlanThisMonth(String ticker, double qty, double price) async {
+    final now = DateTime.now();
+    final candidates = StorageService.plans
+        .where((p) =>
+            p.ticker.toUpperCase() == ticker &&
+            p.status == PlanStatus.active &&
+            p.targetDate != null &&
+            p.targetDate!.year == now.year &&
+            p.targetDate!.month == now.month)
+        .toList();
+    if (candidates.isEmpty) return;
+
+    candidates.sort((a, b) =>
+        (a.targetDate!.difference(now)).abs().compareTo((b.targetDate!.difference(now)).abs()));
+    final plan = candidates.first;
+
+    final prevQty = plan.purchasedQuantity;
+    final prevAvg = plan.purchasedAvgPrice;
+    final newQty = prevQty + qty;
+    plan.purchasedQuantity = newQty;
+    plan.purchasedAvgPrice = newQty > 0 ? ((prevAvg * prevQty) + (price * qty)) / newQty : price;
+    if (newQty >= plan.targetQuantity) {
+      plan.status = PlanStatus.done;
+    }
+    await StorageService.updatePlan(plan);
   }
 
-  Widget _emptyState() {
-    return Center(
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Icon(Icons.shopping_bag_outlined, size: 56, color: Colors.grey.shade400),
-          const SizedBox(height: 12),
-          const Text('Пока нет покупок', style: TextStyle(color: Colors.grey)),
-          const SizedBox(height: 4),
-          Text('Нажми "Сделка", чтобы добавить одну или несколько бумаг', style: TextStyle(color: Colors.grey.shade400, fontSize: 12)),
-        ],
-      ),
-    );
-  }
-
-  Widget _opChip(bool? isSell, String label) {
-    final selected = _filterIsSell == isSell;
-    return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 6),
-      child: ChoiceChip(
-        label: Text(label),
-        selected: selected,
-        onSelected: (_) => setState(() => _filterIsSell = isSell),
-      ),
-    );
-  }
-
-  Widget _filterChip(AssetType? type, String label) {
-    final selected = _filterType == type;
-    return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 6),
-      child: ChoiceChip(
-        label: Text(label),
-        selected: selected,
-        onSelected: (_) => setState(() => _filterType = type),
-      ),
-    );
-  }
+  // ---------------------------------------------------------------------------
+  // Форма новой сделки
+  // ---------------------------------------------------------------------------
 
   void _showAddTradeSheet(BuildContext context) {
     DateTime date = DateTime.now();
     final positions = <_PositionDraft>[_PositionDraft()];
 
-    showModalBottomSheet(
+    showAppSheet(
       context: context,
-      isScrollControlled: true,
       builder: (ctx) => StatefulBuilder(
         builder: (ctx, setSheetState) {
-          final keyboardHeight = MediaQuery.of(ctx).viewInsets.bottom;
-          final maxSheetHeight = MediaQuery.of(ctx).size.height - keyboardHeight - 60;
+          final media = MediaQuery.of(ctx);
+          final keyboard = media.viewInsets.bottom;
+          final typing = keyboard > 0;
+          // Когда клавиатура открыта, свободного места остаётся мало, поэтому
+          // шапка ужимается до одной строки, а дата уезжает в прокручиваемую
+          // часть: всё, кроме заголовка и кнопки сохранения, можно листать.
+          final maxHeight = (media.size.height - keyboard - media.padding.top - 12)
+              .clamp(260.0, media.size.height * 0.94);
+
           return Padding(
-            padding: EdgeInsets.only(bottom: keyboardHeight),
+            padding: EdgeInsets.only(bottom: keyboard),
             child: ConstrainedBox(
-              constraints: BoxConstraints(maxHeight: maxSheetHeight > 200 ? maxSheetHeight : 200),
-              child: Padding(
-                padding: const EdgeInsets.fromLTRB(16, 16, 16, 16),
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  crossAxisAlignment: CrossAxisAlignment.stretch,
-                  children: [
-                  Row(
-                    children: [
-                      const Expanded(
-                        child: Text('Новая сделка', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+              constraints: BoxConstraints(maxHeight: maxHeight),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Padding(
+                    padding: EdgeInsets.fromLTRB(20, typing ? 8 : 14, 20, typing ? 4 : 12),
+                    child: SheetHeader(
+                      title: 'Новая сделка',
+                      subtitle: typing ? null : 'Можно записать сразу несколько бумаг одной датой',
+                      trailing: IconButton(
+                        icon: const Icon(Icons.close_rounded),
+                        onPressed: () => Navigator.pop(ctx),
                       ),
-                      OutlinedButton.icon(
-                        onPressed: () async {
-                          final picked = await showDatePicker(
-                            context: ctx,
-                            initialDate: date,
-                            firstDate: DateTime(2015),
-                            lastDate: DateTime.now(),
-                          );
-                          if (picked != null) setSheetState(() => date = picked);
-                        },
-                        icon: const Icon(Icons.calendar_today, size: 16),
-                        label: Text(DateFormat('dd.MM.yyyy').format(date)),
-                      ),
-                    ],
+                    ),
                   ),
-                  const SizedBox(height: 8),
-                  Text(
-                    'Можно добавить сразу несколько бумаг одной сделкой',
-                    style: TextStyle(color: Colors.grey.shade500, fontSize: 12),
-                  ),
-                  const SizedBox(height: 12),
-                  Expanded(
+                  Flexible(
                     child: ListView.builder(
-                      itemCount: positions.length,
-                      itemBuilder: (context, i) => _PositionCard(
-                        draft: positions[i],
-                        index: i,
-                        onRemove: positions.length > 1
-                            ? () => setSheetState(() => positions.removeAt(i))
-                            : null,
-                        onChanged: () => setSheetState(() {}),
-                      ),
-                    ),
-                  ),
-                  if (keyboardHeight == 0) ...[
-                    const SizedBox(height: 8),
-                    OutlinedButton.icon(
-                      onPressed: () => setSheetState(() => positions.add(_PositionDraft())),
-                      icon: const Icon(Icons.add),
-                      label: const Text('Ещё одна бумага'),
-                    ),
-                    const SizedBox(height: 12),
-                    FilledButton(
-                      onPressed: () async {
-                        // Проверяем, не пытаемся ли продать больше, чем есть в наличии
-                        final sellTotals = <String, double>{};
-                        for (final pos in positions) {
-                          if (!pos.isSell) continue;
-                          final qty = double.tryParse(pos.qtyCtrl.text.replaceAll(',', '.'));
-                          if (pos.tickerCtrl.text.isEmpty || qty == null) continue;
-                          final ticker = pos.tickerCtrl.text.toUpperCase();
-                          sellTotals[ticker] = (sellTotals[ticker] ?? 0) + qty;
-                        }
-                        final problems = <String>[];
-                        sellTotals.forEach((ticker, sellQty) {
-                          final available = AnalyticsService.currentHoldings()[ticker]?.qty ?? 0;
-                          if (sellQty > available + 1e-9) {
-                            final availStr = available.toStringAsFixed(available == available.roundToDouble() ? 0 : 2);
-                            final sellStr = sellQty.toStringAsFixed(sellQty == sellQty.roundToDouble() ? 0 : 2);
-                            problems.add('$ticker: в наличии $availStr шт, продаёшь $sellStr шт');
-                          }
-                        });
-                        if (problems.isNotEmpty) {
-                          final proceed = await showDialog<bool>(
-                            context: ctx,
-                            builder: (dctx) => AlertDialog(
-                              title: const Text('Продажа больше, чем есть'),
-                              content: Text('${problems.join("\n")}\n\nЛишнее количество будет проигнорировано при сохранении. Всё равно продолжить?'),
-                              actions: [
-                                TextButton(onPressed: () => Navigator.pop(dctx, false), child: const Text('Отмена')),
-                                FilledButton(onPressed: () => Navigator.pop(dctx, true), child: const Text('Продолжить')),
-                              ],
+                      padding: const EdgeInsets.fromLTRB(20, 0, 20, 8),
+                      itemCount: positions.length + 2,
+                      itemBuilder: (context, i) {
+                        if (i == 0) {
+                          return Padding(
+                            padding: const EdgeInsets.only(bottom: 12),
+                            child: AppDateField(
+                              value: date,
+                              label: 'Дата сделки',
+                              lastDate: DateTime.now(),
+                              firstDate: DateTime(2010),
+                              onPicked: (d) => setSheetState(() => date = d),
                             ),
                           );
-                          if (proceed != true) return;
                         }
-
-                        int added = 0;
-                        final addedTickers = <String>{};
-                        for (final pos in positions) {
-                          final qty = double.tryParse(pos.qtyCtrl.text.replaceAll(',', '.'));
-                          final price = double.tryParse(pos.priceCtrl.text.replaceAll(',', '.'));
-                          if (pos.tickerCtrl.text.isEmpty || qty == null || price == null) continue;
-                          final fee = double.tryParse(pos.feeCtrl.text.replaceAll(',', '.')) ?? 0;
-                          final ticker = pos.tickerCtrl.text.toUpperCase();
-                          StorageService.addPurchase(Purchase(
-                            id: const Uuid().v4(),
-                            date: date,
-                            ticker: ticker,
-                            name: pos.nameCtrl.text.isEmpty ? pos.tickerCtrl.text : pos.nameCtrl.text,
-                            type: pos.type,
-                            quantity: qty,
-                            pricePerUnit: price,
-                            fee: fee,
-                            currency: pos.currency,
-                            sector: pos.sector,
-                            isSell: pos.isSell,
-                            note: pos.noteCtrl.text.isEmpty ? null : pos.noteCtrl.text,
-                          ));
-                          // Цена сделки — это реальное наблюдение цены на эту дату,
-                          // поэтому сразу фиксируем её и в историю ручных цен (как
-                          // будто пользователь сам ввёл цену на эту дату). Если позже
-                          // добавится более новая ручная/сделочная цена — эта точка
-                          // останется в истории, но перестанет быть "текущей".
-                          ManualPriceService.setAt(ticker, date, price);
-                          added++;
-                          if (!pos.isSell) addedTickers.add(ticker);
+                        if (i == positions.length + 1) {
+                          return Padding(
+                            padding: const EdgeInsets.only(top: 4, bottom: 8),
+                            child: OutlinedButton.icon(
+                              onPressed: () => setSheetState(() => positions.add(_PositionDraft())),
+                              icon: const Icon(Icons.add_rounded, size: 18),
+                              label: const Text('Ещё одна бумага'),
+                            ),
+                          );
                         }
-                        if (added > 0) {
-                          Navigator.pop(ctx);
-                          setState(() {});
-                          // Проверяем, нет ли активных планов на купленные тикеры —
-                          // предлагаем сразу отметить их выполненными
-                          if (context.mounted) {
-                            await _checkPlansForTickers(context, addedTickers);
-                          }
-                        }
+                        return _PositionCard(
+                          draft: positions[i - 1],
+                          index: i - 1,
+                          onRemove: positions.length > 1
+                              ? () => setSheetState(() => positions.removeAt(i - 1))
+                              : null,
+                          onChanged: () => setSheetState(() {}),
+                        );
                       },
-                    child: Padding(
-                      padding: const EdgeInsets.symmetric(vertical: 10),
-                      child: Text('Сохранить (${positions.length} ${positions.length == 1 ? "позиция" : "позиции"})'),
                     ),
                   ),
-                  ],
+                  Container(
+                    padding: const EdgeInsets.fromLTRB(20, 12, 20, 20),
+                    decoration: BoxDecoration(
+                      border: Border(top: BorderSide(color: context.hairline)),
+                    ),
+                    child: GradientButton(
+                      label: 'Сохранить · ${positions.length} ${Fmt.plural(positions.length, "позиция", "позиции", "позиций")}',
+                      icon: Icons.check_rounded,
+                      onPressed: () => _saveTrade(ctx, positions, date),
+                    ),
+                  ),
                 ],
               ),
             ),
-          ),
-        );
+          );
         },
       ),
     );
   }
+
+  Future<void> _saveTrade(BuildContext ctx, List<_PositionDraft> positions, DateTime date) async {
+    // Проверяем, не пытаемся ли продать больше, чем есть в наличии.
+    final sellTotals = <String, double>{};
+    for (final pos in positions) {
+      if (!pos.isSell) continue;
+      final qty = double.tryParse(pos.qtyCtrl.text.replaceAll(',', '.'));
+      if (pos.tickerCtrl.text.isEmpty || qty == null) continue;
+      sellTotals[pos.tickerCtrl.text.toUpperCase()] =
+          (sellTotals[pos.tickerCtrl.text.toUpperCase()] ?? 0) + qty;
+    }
+    final problems = <String>[];
+    sellTotals.forEach((ticker, sellQty) {
+      final available = AnalyticsService.currentHoldings()[ticker]?.qty ?? 0;
+      if (sellQty > available + 1e-9) {
+        problems.add('$ticker: в наличии ${Fmt.qty(available)} шт, продаёшь ${Fmt.qty(sellQty)} шт');
+      }
+    });
+    if (problems.isNotEmpty) {
+      final proceed = await showDialog<bool>(
+        context: ctx,
+        builder: (dctx) => AlertDialog(
+          title: const Text('Продажа больше, чем есть'),
+          content: Text(
+            '${problems.join("\n")}\n\nЛишнее количество будет проигнорировано при расчётах. Всё равно продолжить?',
+          ),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(dctx, false), child: const Text('Отмена')),
+            FilledButton(onPressed: () => Navigator.pop(dctx, true), child: const Text('Продолжить')),
+          ],
+        ),
+      );
+      if (proceed != true) return;
+    }
+
+    int added = 0;
+    for (final pos in positions) {
+      final qty = double.tryParse(pos.qtyCtrl.text.replaceAll(',', '.'));
+      final price = double.tryParse(pos.priceCtrl.text.replaceAll(',', '.'));
+      if (pos.tickerCtrl.text.isEmpty || qty == null || price == null) continue;
+      final fee = double.tryParse(pos.feeCtrl.text.replaceAll(',', '.')) ?? 0;
+      final ticker = pos.tickerCtrl.text.toUpperCase();
+      await StorageService.addPurchase(Purchase(
+        id: const Uuid().v4(),
+        date: date,
+        ticker: ticker,
+        name: pos.nameCtrl.text.isEmpty ? pos.tickerCtrl.text : pos.nameCtrl.text,
+        type: pos.type,
+        quantity: qty,
+        pricePerUnit: price,
+        fee: fee,
+        currency: pos.currency,
+        sector: pos.sector,
+        isSell: pos.isSell,
+        note: pos.noteCtrl.text.isEmpty ? null : pos.noteCtrl.text,
+      ));
+      // Цена сделки — реальное наблюдение цены на эту дату, поэтому сразу
+      // фиксируем её и в истории ручных цен.
+      await ManualPriceService.setAt(ticker, date, price);
+      if (!pos.isSell && pos.applyToNearestPlan) {
+        await _applyToNearestPlanThisMonth(ticker, qty, price);
+      }
+      added++;
+    }
+    if (added > 0 && ctx.mounted) {
+      Navigator.pop(ctx);
+      if (mounted) setState(() {});
+    }
+  }
 }
 
-/// Черновик одной позиции внутри мультипозиционной сделки
+/// Черновик одной позиции внутри мультипозиционной сделки.
 class _PositionDraft {
   final tickerCtrl = TextEditingController();
   final nameCtrl = TextEditingController();
@@ -433,6 +579,14 @@ class _PositionDraft {
   String currency = 'RUB';
   String? sector;
   bool isSell = false;
+  bool applyToNearestPlan = false;
+
+  double get total {
+    final q = double.tryParse(qtyCtrl.text.replaceAll(',', '.')) ?? 0;
+    final p = double.tryParse(priceCtrl.text.replaceAll(',', '.')) ?? 0;
+    final f = double.tryParse(feeCtrl.text.replaceAll(',', '.')) ?? 0;
+    return q * p + f;
+  }
 }
 
 class _PositionCard extends StatelessWidget {
@@ -448,44 +602,69 @@ class _PositionCard extends StatelessWidget {
     required this.onChanged,
   });
 
-  String _typeLabel(AssetType t) {
-    switch (t) {
-      case AssetType.stock:
-        return 'Акция';
-      case AssetType.bond:
-        return 'Облигация';
-      case AssetType.etf:
-        return 'Фонд';
-      case AssetType.currency:
-        return 'Валюта';
-      case AssetType.other:
-        return 'Другое';
-    }
-  }
-
   @override
   Widget build(BuildContext context) {
-    return Card(
-      margin: const EdgeInsets.symmetric(vertical: 6),
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-      color: Theme.of(context).colorScheme.surfaceContainerLow,
-      child: Padding(
-        padding: const EdgeInsets.all(12),
+    final accentColor = draft.isSell ? AppColors.negative : AppColors.positive;
+    final holding = draft.tickerCtrl.text.isEmpty
+        ? null
+        : AnalyticsService.currentHoldings()[draft.tickerCtrl.text.toUpperCase()];
+
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 12),
+      child: AppCard(
+        padding: const EdgeInsets.all(14),
+        color: context.isDark ? Colors.white.withOpacity(0.03) : AppColors.lightSurfaceHigh,
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
             Row(
               children: [
-                Text('Бумага ${index + 1}', style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13)),
-                const Spacer(),
+                Container(
+                  width: 22,
+                  height: 22,
+                  alignment: Alignment.center,
+                  decoration: BoxDecoration(
+                    color: accentColor.withOpacity(0.16),
+                    borderRadius: BorderRadius.circular(7),
+                  ),
+                  child: Text(
+                    '${index + 1}',
+                    style: TextStyle(fontSize: 11, fontWeight: FontWeight.w800, color: accentColor),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    draft.tickerCtrl.text.isEmpty ? 'Бумага' : draft.tickerCtrl.text.toUpperCase(),
+                    style: const TextStyle(fontSize: 13.5, fontWeight: FontWeight.w800),
+                  ),
+                ),
+                if (draft.total > 0)
+                  Text(
+                    Fmt.money(draft.total),
+                    style: TextStyle(fontSize: 12.5, fontWeight: FontWeight.w800, color: context.dim),
+                  ),
                 if (onRemove != null)
                   IconButton(
-                    icon: const Icon(Icons.close, size: 20),
+                    icon: const Icon(Icons.close_rounded, size: 18),
                     onPressed: onRemove,
                     visualDensity: VisualDensity.compact,
                   ),
               ],
             ),
+            const SizedBox(height: 12),
+            SegmentedToggle<bool>(
+              values: const [false, true],
+              selected: draft.isSell,
+              labelOf: (v) => v ? 'Продажа' : 'Покупка',
+              iconOf: (v) => v ? Icons.sell_outlined : Icons.add_shopping_cart_rounded,
+              colorOf: (v) => v ? AppColors.negative : AppColors.positive,
+              onChanged: (v) {
+                draft.isSell = v;
+                onChanged();
+              },
+            ),
+            const SizedBox(height: 12),
             SecurityPickerField(
               onSelected: (s) {
                 draft.tickerCtrl.text = s.ticker;
@@ -495,73 +674,42 @@ class _PositionCard extends StatelessWidget {
                 onChanged();
               },
             ),
-            const SizedBox(height: 10),
-            SegmentedButton<bool>(
-              segments: const [
-                ButtonSegment(value: false, label: Text('Покупка'), icon: Icon(Icons.add_shopping_cart, size: 16)),
-                ButtonSegment(value: true, label: Text('Продажа'), icon: Icon(Icons.sell_outlined, size: 16)),
-              ],
-              selected: {draft.isSell},
-              onSelectionChanged: (s) {
-                draft.isSell = s.first;
-                onChanged();
-              },
-            ),
-            if (draft.isSell && draft.tickerCtrl.text.isNotEmpty)
-              Padding(
-                padding: const EdgeInsets.only(top: 8),
-                child: Builder(
-                  builder: (context) {
-                    final holding = AnalyticsService.currentHoldings()[draft.tickerCtrl.text.toUpperCase()];
-                    final qty = holding?.qty ?? 0;
-                    return Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-                      decoration: BoxDecoration(
-                        color: qty > 0
-                            ? Theme.of(context).colorScheme.primaryContainer.withOpacity(0.5)
-                            : Colors.red.withOpacity(0.1),
-                        borderRadius: BorderRadius.circular(8),
-                      ),
-                      child: Text(
-                        qty > 0
-                            ? 'На счету: ${qty.toStringAsFixed(qty == qty.roundToDouble() ? 0 : 2)} шт'
-                            : 'Этой бумаги нет на счету',
-                        style: TextStyle(
-                          fontSize: 12,
-                          color: qty > 0 ? null : Colors.red,
-                          fontWeight: FontWeight.w600,
-                        ),
-                      ),
-                    );
-                  },
-                ),
+            if (draft.isSell && draft.tickerCtrl.text.isNotEmpty) ...[
+              const SizedBox(height: 10),
+              InfoBanner(
+                icon: (holding?.qty ?? 0) > 0 ? Icons.inventory_2_outlined : Icons.error_outline_rounded,
+                color: (holding?.qty ?? 0) > 0 ? AppColors.info : AppColors.negative,
+                text: (holding?.qty ?? 0) > 0
+                    ? 'На счету: ${Fmt.qty(holding!.qty)} шт по средней ${holding!.avgCost.toStringAsFixed(2)}'
+                    : 'Этой бумаги нет на счету',
               ),
-            const SizedBox(height: 10),
+            ],
+            const SizedBox(height: 12),
             Row(
               children: [
                 Expanded(
-                  child: TextField(
+                  child: AppTextField(
                     controller: draft.tickerCtrl,
-                    textCapitalization: TextCapitalization.characters,
-                    decoration: const InputDecoration(labelText: 'Тикер', border: OutlineInputBorder(), isDense: true),
+                    label: 'Тикер',
+                    upperCase: true,
                     onChanged: (_) => onChanged(),
                   ),
                 ),
-                const SizedBox(width: 8),
+                const SizedBox(width: 10),
                 Expanded(
                   flex: 2,
-                  child: TextField(
-                    controller: draft.nameCtrl,
-                    decoration: const InputDecoration(labelText: 'Название', border: OutlineInputBorder(), isDense: true),
-                  ),
+                  child: AppTextField(controller: draft.nameCtrl, label: 'Название'),
                 ),
               ],
             ),
             const SizedBox(height: 10),
-            DropdownButtonFormField<AssetType>(
+            AppDropdown<AssetType>(
               value: draft.type,
-              decoration: const InputDecoration(labelText: 'Тип актива', border: OutlineInputBorder(), isDense: true),
-              items: AssetType.values.map((t) => DropdownMenuItem(value: t, child: Text(_typeLabel(t)))).toList(),
+              label: 'Тип актива',
+              icon: Icons.category_outlined,
+              items: AssetType.values
+                  .map((t) => DropdownMenuItem(value: t, child: Text(Fmt.assetType(t))))
+                  .toList(),
               onChanged: (v) {
                 draft.type = v ?? AssetType.stock;
                 onChanged();
@@ -571,18 +719,20 @@ class _PositionCard extends StatelessWidget {
             Row(
               children: [
                 Expanded(
-                  child: TextField(
+                  child: AppTextField(
                     controller: draft.qtyCtrl,
-                    keyboardType: const TextInputType.numberWithOptions(decimal: true),
-                    decoration: const InputDecoration(labelText: 'Кол-во', border: OutlineInputBorder(), isDense: true),
+                    label: 'Кол-во',
+                    number: true,
+                    onChanged: (_) => onChanged(),
                   ),
                 ),
-                const SizedBox(width: 8),
+                const SizedBox(width: 10),
                 Expanded(
-                  child: TextField(
+                  child: AppTextField(
                     controller: draft.priceCtrl,
-                    keyboardType: const TextInputType.numberWithOptions(decimal: true),
-                    decoration: const InputDecoration(labelText: 'Цена', border: OutlineInputBorder(), isDense: true),
+                    label: 'Цена',
+                    number: true,
+                    onChanged: (_) => onChanged(),
                   ),
                 ),
               ],
@@ -591,18 +741,21 @@ class _PositionCard extends StatelessWidget {
             Row(
               children: [
                 Expanded(
-                  child: TextField(
+                  child: AppTextField(
                     controller: draft.feeCtrl,
-                    keyboardType: const TextInputType.numberWithOptions(decimal: true),
-                    decoration: const InputDecoration(labelText: 'Комиссия', border: OutlineInputBorder(), isDense: true),
+                    label: 'Комиссия',
+                    number: true,
+                    onChanged: (_) => onChanged(),
                   ),
                 ),
-                const SizedBox(width: 8),
+                const SizedBox(width: 10),
                 Expanded(
-                  child: DropdownButtonFormField<String>(
+                  child: AppDropdown<String>(
                     value: draft.currency,
-                    decoration: const InputDecoration(labelText: 'Валюта', border: OutlineInputBorder(), isDense: true),
-                    items: ['RUB', 'USD', 'EUR', 'CNY'].map((c) => DropdownMenuItem(value: c, child: Text(c))).toList(),
+                    label: 'Валюта',
+                    items: const ['RUB', 'USD', 'EUR', 'CNY']
+                        .map((c) => DropdownMenuItem(value: c, child: Text(c)))
+                        .toList(),
                     onChanged: (v) {
                       draft.currency = v ?? 'RUB';
                       onChanged();
@@ -612,10 +765,20 @@ class _PositionCard extends StatelessWidget {
               ],
             ),
             const SizedBox(height: 10),
-            TextField(
-              controller: draft.noteCtrl,
-              decoration: const InputDecoration(labelText: 'Заметка (необязательно)', border: OutlineInputBorder(), isDense: true),
-            ),
+            AppTextField(controller: draft.noteCtrl, label: 'Заметка (необязательно)'),
+            if (!draft.isSell) ...[
+              const SizedBox(height: 4),
+              AppCheckRow(
+                value: draft.applyToNearestPlan,
+                title: 'Учитывать в ближайшем плане этого месяца',
+                subtitle: 'Запишет количество и среднюю цену в ближайший активный план '
+                    'этого тикера с датой в текущем месяце; при достижении цели план станет выполненным',
+                onChanged: (v) {
+                  draft.applyToNearestPlan = v;
+                  onChanged();
+                },
+              ),
+            ],
           ],
         ),
       ),

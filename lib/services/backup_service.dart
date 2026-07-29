@@ -12,6 +12,7 @@ import 'manual_price_service.dart';
 import 'currency_service.dart';
 import 'logo_service.dart';
 import 'favorites_service.dart';
+import 'radar_settings_service.dart';
 
 /// Результат импорта бэкапа: сколько записей добавлено и какие логотипы не
 /// нашлись рядом с файлом (тикер -> ожидаемый относительный путь) — раньше
@@ -29,7 +30,7 @@ class ImportResult {
 class BackupService {
   static Future<Map<String, dynamic>> _buildData() async {
     final data = <String, dynamic>{
-      'version': 2,
+      'version': 3,
       'exportedAt': DateTime.now().toIso8601String(),
       'deposits': StorageService.deposits
           .map((d) => {
@@ -86,6 +87,8 @@ class BackupService {
           .toList(),
       'customSectors': SectorService.customSectors,
       'sectorAssignments': SectorService.allAssignments,
+      'radarSectorTargets': RadarSettingsService.sectorTargets,
+      'radarTickerTargets': RadarSettingsService.tickerTargets,
     };
 
     // Дополнительные данные — каждая обёрнута в свой try/catch: сбой в одной
@@ -261,6 +264,20 @@ class BackupService {
     for (final entry in sectorAssignments.entries) {
       await SectorService.assignSector(entry.key as String, entry.value as String);
     }
+
+    Map<String, double> readRadarTargets(String key) {
+      final source = data[key];
+      if (source is! Map) return {};
+      return {
+        for (final entry in source.entries)
+          if (entry.value is num) '${entry.key}': (entry.value as num).toDouble(),
+      };
+    }
+
+    await RadarSettingsService.save(
+      sectorTargets: readRadarTargets('radarSectorTargets'),
+      tickerTargets: readRadarTargets('radarTickerTargets'),
+    );
 
     final priceHistory = (data['manualPriceHistory'] as Map?) ?? {};
     if (priceHistory.isNotEmpty) {

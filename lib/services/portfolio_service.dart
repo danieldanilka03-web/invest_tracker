@@ -4,6 +4,7 @@ import 'package:hive_flutter/hive_flutter.dart';
 import 'package:uuid/uuid.dart';
 import 'storage_service.dart';
 import 'sector_service.dart';
+import 'radar_settings_service.dart';
 
 /// Статус портфеля: активен (в работе) или закрыт (архивный, но не удалён).
 /// Это отдельно от того, какой портфель сейчас ВЫБРАН (см. activeId/switchTo)
@@ -128,6 +129,7 @@ class PortfolioService {
     await _box.put(_activeKey, id);
     await StorageService.reopenBoxesFor(id);
     await SectorService.reopenBoxFor(id);
+    await RadarSettingsService.reopenBoxFor(id);
     version.value++;
   }
 
@@ -148,10 +150,12 @@ class PortfolioService {
       await _box.put(_activeKey, newActiveId);
       await StorageService.reopenBoxesFor(newActiveId);
       await SectorService.reopenBoxFor(newActiveId);
+      await RadarSettingsService.reopenBoxFor(newActiveId);
     }
 
     await StorageService.deleteBoxesFor(id);
     await SectorService.deleteBoxFor(id);
+    await RadarSettingsService.deleteBoxFor(id);
     version.value++;
   }
 }

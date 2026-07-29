@@ -1,12 +1,29 @@
 import 'package:flutter/material.dart';
-import 'package:fl_chart/fl_chart.dart';
+import 'package:uuid/uuid.dart';
+import '../design/charts.dart';
+import '../design/fields.dart';
+import '../design/format.dart';
+import '../design/motion.dart';
+import '../design/surfaces.dart';
+import '../design/tilt_shine_card.dart';
+import '../design/tokens.dart';
 import '../services/analytics_service.dart';
+import '../models/deposit.dart';
+import '../services/cash_service.dart';
 import '../services/storage_service.dart';
 import '../services/favorites_service.dart';
-import '../services/tax_service.dart';
 import '../services/home_widget_service.dart';
+import '../services/manual_price_service.dart';
+import '../services/portfolio_service.dart';
+import '../services/storage_service.dart';
+import '../services/tax_service.dart';
 import '../widgets/ticker_avatar.dart';
+import 'home_screen.dart';
 import 'ticker_detail_screen.dart';
+import 'wrapped_screen.dart';
+
+/// По какому признаку строится кольцевая диаграмма распределения.
+enum _AllocationMode { sectors, tickers }
 
 class DashboardScreen extends StatefulWidget {
   const DashboardScreen({super.key});
@@ -17,24 +34,28 @@ class DashboardScreen extends StatefulWidget {
 
 class _DashboardScreenState extends State<DashboardScreen> {
   PeriodFilter _period = PeriodFilter.all;
-  PeriodFilter _incomeChartPeriod = PeriodFilter.year1;
-  int? _selectedIncomeIndex;
-  final Map<String, int> _selectedPieIndexes = {};
+  PeriodFilter _incomePeriod = PeriodFilter.year1;
+  _AllocationMode _alloc = _AllocationMode.sectors;
 
   @override
   void initState() {
     super.initState();
     HomeWidgetService.update();
     StorageService.dataVersion.addListener(_onDataChanged);
+    ManualPriceService.version.addListener(_onDataChanged);
   }
 
   @override
   void dispose() {
     StorageService.dataVersion.removeListener(_onDataChanged);
+    ManualPriceService.version.removeListener(_onDataChanged);
     super.dispose();
   }
 
-  void _onDataChanged() => HomeWidgetService.update();
+  void _onDataChanged() {
+    HomeWidgetService.update();
+    if (mounted) setState(() {});
+  }
 
   String _periodLabel(PeriodFilter f) {
     switch (f) {
@@ -51,17 +72,6 @@ class _DashboardScreenState extends State<DashboardScreen> {
     }
   }
 
-  final _sectorColors = const [
-    Color(0xFF6C5CE7),
-    Color(0xFF00B894),
-    Color(0xFFE17055),
-    Color(0xFF0984E3),
-    Color(0xFFE84393),
-    Color(0xFFFDCB6E),
-    Color(0xFF00CEC9),
-    Color(0xFFD63031),
-  ];
-
   @override
   Widget build(BuildContext context) {
     return ValueListenableBuilder<int>(
@@ -76,733 +86,834 @@ class _DashboardScreenState extends State<DashboardScreen> {
     final unrealizedPnl = AnalyticsService.totalUnrealizedPnlRub();
     final realizedPnl = AnalyticsService.totalRealizedPnlRub();
     final holdings = AnalyticsService.currentHoldings();
+    final cash = CashService.summary();
     final invested = AnalyticsService.totalInvested(f: _period);
-    final income = AnalyticsService.totalIncome(f: _period);
-    final totalIncomeAllTime = AnalyticsService.totalIncome(f: PeriodFilter.all);
-    final totalProfit = unrealizedPnl + realizedPnl + totalIncomeAllTime;
-    final dividendForecastRub = AnalyticsService.totalDividendForecastRub();
+    final periodIncome = AnalyticsService.totalIncome(f: _period);
+    final totalIncome = AnalyticsService.totalIncome(f: PeriodFilter.all);
+    final totalProfit = unrealizedPnl + realizedPnl + totalIncome;
+    final forecast = AnalyticsService.totalDividendForecastRub();
     final bySector = AnalyticsService.currentValueBySector();
     final byTicker = AnalyticsService.currentValueByTicker();
-    final incomeByMonth = AnalyticsService.incomeByMonth(f: _incomeChartPeriod);
+    final incomeByMonth = AnalyticsService.incomeByMonth(f: _incomePeriod);
     final concentration = AnalyticsService.topHoldingConcentrationPct();
     final topTicker = AnalyticsService.topHoldingTicker();
     final xirr = AnalyticsService.xirrPercent();
     final taxDue = TaxService.enabled ? TaxService.totalTaxDue() : 0.0;
-    final primary = Theme.of(context).colorScheme.primary;
-
-    // Чистая переоценка портфеля за выбранный период: состав (тикер + кол-во)
-    // фиксируется на начало периода, покупки/продажи внутри периода на это
-    // число не влияют — см. AnalyticsService.portfolioChangeForPeriod.
-    // Для "Всё время" метод возвращает null (нет состава "на начало"), и
-    // строка изменения за период просто не показывается.
     final periodChange = AnalyticsService.portfolioChangeForPeriod(_period);
-    final changeAbs = periodChange?.changeAbs;
-    final changePct = periodChange?.changePct;
 
-    return Scaffold(
-      appBar: AppBar(
-        title: const Text('Мой портфель'),
-      ),
-      body: ListView(
-        padding: const EdgeInsets.fromLTRB(16, 6, 16, 32),
-        children: [
-          // --- Hero-карточка стоимости портфеля ---
-          TweenAnimationBuilder<double>(
-            duration: const Duration(milliseconds: 900),
-            curve: Curves.easeOutCubic,
-            tween: Tween(begin: 0, end: currentValue),
-            builder: (context, animatedValue, _) => Container(
-            padding: const EdgeInsets.all(22),
-            decoration: BoxDecoration(
-              borderRadius: BorderRadius.circular(28),
-              gradient: LinearGradient(
-                begin: Alignment.topLeft,
-                end: Alignment.bottomRight,
-                colors: [const Color(0xFF101B3D), primary, primary.withOpacity(0.72)],
-              ),
-              boxShadow: [
-                BoxShadow(color: primary.withOpacity(0.28), blurRadius: 28, offset: const Offset(0, 14)),
-              ],
-            ),
+    final accent = context.accent;
+    final isEmpty = holdings.isEmpty && totalIncome == 0 && realizedPnl == 0;
+
+    int step = 0;
+
+    final children = <Widget>[
+      _header(context),
+      const SizedBox(height: 18),
+
+      // --- Главная карточка: стоимость, результат, график ---
+      FadeSlideIn(
+        delay: Duration(milliseconds: 40 * step++),
+        child: TiltShineCard(
+          child: GlassCard(
+            glow: accent,
+            padding: const EdgeInsets.fromLTRB(20, 20, 20, 14),
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Row(
                   children: [
-                    const Text('СТОИМОСТЬ ПОРТФЕЛЯ', style: TextStyle(color: Colors.white70, fontSize: 11, fontWeight: FontWeight.w700, letterSpacing: 1.1)),
+                    Text(
+                      'Стоимость портфеля',
+                      style: TextStyle(fontSize: 12.5, fontWeight: FontWeight.w600, color: context.dim),
+                    ),
                     const Spacer(),
-                    Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 5),
-                      decoration: BoxDecoration(color: Colors.white.withOpacity(.14), borderRadius: BorderRadius.circular(10)),
-                      child: Text('${holdings.length} поз.', style: const TextStyle(color: Colors.white, fontSize: 11, fontWeight: FontWeight.w700)),
-                    ),
+                    if (periodChange != null)
+                      TagChip(
+                        text: '${Fmt.pct(periodChange.changePct)} · ${_periodLabel(_period).toLowerCase()}',
+                        color: AppColors.pnl(periodChange.changeAbs),
+                        icon: periodChange.changeAbs >= 0
+                            ? Icons.trending_up_rounded
+                            : Icons.trending_down_rounded,
+                      ),
                   ],
                 ),
-                const SizedBox(height: 6),
-                Text(
-                  '${animatedValue.toStringAsFixed(0)} ₽',
-                  style: const TextStyle(color: Colors.white, fontSize: 34, fontWeight: FontWeight.w800, letterSpacing: -1.1),
+                const SizedBox(height: 8),
+                RollingNumber(
+                  value: currentValue,
+                  formatter: (v) => Fmt.money(v),
+                  style: const TextStyle(fontSize: 36, fontWeight: FontWeight.w800, letterSpacing: -1.5),
                 ),
-                if (changeAbs != null && changePct != null)
-                  Padding(
-                    padding: const EdgeInsets.only(top: 4),
-                    child: Row(
-                      children: [
-                        Icon(
-                          changeAbs >= 0 ? Icons.trending_up : Icons.trending_down,
-                          color: Colors.white,
-                          size: 16,
-                        ),
-                        const SizedBox(width: 4),
-                        Text(
-                          '${changeAbs >= 0 ? "+" : ""}${changeAbs.toStringAsFixed(0)} (${changePct.toStringAsFixed(1)}%)',
-                          style: const TextStyle(color: Colors.white, fontSize: 13, fontWeight: FontWeight.w600),
-                        ),
-                        Text(' за ${_periodLabel(_period).toLowerCase()}', style: const TextStyle(color: Colors.white70, fontSize: 12)),
-                      ],
-                    ),
-                  ),
-                if (holdings.isNotEmpty || totalIncomeAllTime != 0 || realizedPnl != 0)
-                  Padding(
-                    padding: const EdgeInsets.only(top: 6),
-                    child: Row(
-                      children: [
-                        Icon(
-                          totalProfit >= 0 ? Icons.arrow_upward : Icons.arrow_downward,
-                          color: totalProfit >= 0 ? const Color(0xFF69F0AE) : const Color(0xFFFF8A80),
-                          size: 14,
-                        ),
-                        const SizedBox(width: 4),
-                        Flexible(
-                          child: Text(
-                            'Общая прибыль: ${totalProfit >= 0 ? "+" : ""}${totalProfit.toStringAsFixed(0)} ₽',
-                            style: TextStyle(
-                              color: totalProfit >= 0 ? const Color(0xFF69F0AE) : const Color(0xFFFF8A80),
-                              fontSize: 12,
-                              fontWeight: FontWeight.w600,
-                            ),
-                            overflow: TextOverflow.ellipsis,
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                if (holdings.isNotEmpty || totalIncomeAllTime != 0 || realizedPnl != 0)
-                  Padding(
-                    padding: const EdgeInsets.only(top: 2),
-                    child: Wrap(
-                      spacing: 8,
-                      runSpacing: 3,
-                      children: [
-                        _heroMetric('Нереализ. ${unrealizedPnl >= 0 ? "+" : ""}${unrealizedPnl.toStringAsFixed(0)}'),
-                        _heroMetric('Реализ. ${realizedPnl >= 0 ? "+" : ""}${realizedPnl.toStringAsFixed(0)}'),
-                        _heroMetric('Доход +${totalIncomeAllTime.toStringAsFixed(0)}'),
-                      ],
-                    ),
-                  ),
-                const SizedBox(height: 16),
-                if (timeline.length > 1)
-                  SizedBox(
-                    height: 132,
-                    child: LineChart(
-                      LineChartData(
-                        gridData: const FlGridData(show: false),
-                        titlesData: const FlTitlesData(show: false),
-                        borderData: FlBorderData(show: false),
-                        lineTouchData: const LineTouchData(enabled: false),
-                        lineBarsData: [
-                          LineChartBarData(
-                            spots: [for (int i = 0; i < timeline.length; i++) FlSpot(i.toDouble(), timeline[i].value)],
-                            isCurved: true,
-                            color: Colors.white,
-                            barWidth: 3,
-                            dotData: const FlDotData(show: false),
-                            belowBarData: BarAreaData(show: true, color: Colors.white.withOpacity(0.15)),
-                          ),
-                        ],
-                      ),
-                    ),
-                  )
-                else
-                  const Padding(
-                    padding: EdgeInsets.symmetric(vertical: 12),
-                    child: Text('Добавь первую покупку, чтобы увидеть график', style: TextStyle(color: Colors.white70, fontSize: 12)),
-                  ),
-              ],
-            ),
-            ),
-          ),
-
-          const SizedBox(height: 16),
-
-          // --- фильтр периода ---
-          SizedBox(
-            height: 36,
-            child: ListView(
-              scrollDirection: Axis.horizontal,
-              children: PeriodFilter.values
-                  .map((f) => Padding(
-                        padding: const EdgeInsets.only(right: 8),
-                        child: ChoiceChip(
-                          label: Text(_periodLabel(f)),
-                          selected: _period == f,
-                          onSelected: (_) => setState(() => _period = f),
-                        ),
-                      ))
-                  .toList(),
-            ),
-          ),
-
-          const SizedBox(height: 16),
-
-          Row(
-            children: [
-              Expanded(child: _miniStat(context, 'Вложено', invested, Icons.account_balance_wallet_outlined)),
-              const SizedBox(width: 10),
-              Expanded(child: _miniStat(context, 'Доход', income, Icons.payments_outlined)),
-            ],
-          ),
-          if (xirr != null) ...[
-            const SizedBox(height: 10),
-            Container(
-              padding: const EdgeInsets.all(14),
-              decoration: BoxDecoration(
-                color: Theme.of(context).colorScheme.surfaceContainerLow,
-                borderRadius: BorderRadius.circular(16),
-              ),
-              child: Row(
-                children: [
-                  Icon(Icons.percent, size: 20, color: Theme.of(context).colorScheme.primary),
-                  const SizedBox(width: 10),
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text('Доходность (XIRR)', style: TextStyle(fontSize: 11, color: Colors.grey.shade500)),
-                        Text(
-                          '${xirr >= 0 ? "+" : ""}${xirr.toStringAsFixed(1)}% годовых',
-                          style: TextStyle(
-                            fontWeight: FontWeight.bold,
-                            fontSize: 15,
-                            color: xirr >= 0 ? Colors.green : Colors.red,
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                ],
-              ),
-            ),
-          ],
-          if (taxDue > 0) ...[
-            const SizedBox(height: 10),
-            Container(
-              padding: const EdgeInsets.all(14),
-              decoration: BoxDecoration(
-                color: Theme.of(context).colorScheme.surfaceContainerLow,
-                borderRadius: BorderRadius.circular(16),
-              ),
-              child: Row(
-                children: [
-                  const Icon(Icons.receipt_long, size: 20, color: Colors.orange),
-                  const SizedBox(width: 10),
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text('Налог с продаж (НДФЛ)', style: TextStyle(fontSize: 11, color: Colors.grey.shade500)),
-                        Text(
-                          '~${taxDue.toStringAsFixed(0)} ₽',
-                          style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 15, color: Colors.orange),
-                        ),
-                      ],
-                    ),
-                  ),
-                ],
-              ),
-            ),
-          ],
-          if (concentration > 40 && topTicker != null) ...[
-            const SizedBox(height: 10),
-            Container(
-              padding: const EdgeInsets.all(14),
-              decoration: BoxDecoration(
-                color: Colors.orange.withOpacity(0.12),
-                borderRadius: BorderRadius.circular(16),
-                border: Border.all(color: Colors.orange.withOpacity(0.3)),
-              ),
-              child: Row(
-                children: [
-                  const Icon(Icons.warning_amber_rounded, size: 20, color: Colors.orange),
-                  const SizedBox(width: 10),
-                  Expanded(
-                    child: Text(
-                      '$topTicker занимает ${concentration.toStringAsFixed(0)}% портфеля — низкая диверсификация',
-                      style: const TextStyle(fontSize: 12, color: Colors.orange),
-                    ),
-                  ),
-                ],
-              ),
-            ),
-          ],
-
-          const SizedBox(height: 24),
-
-          // --- Избранное ---
-          ValueListenableBuilder<int>(
-            valueListenable: FavoritesService.version,
-            builder: (context, _, __) {
-              final favs = FavoritesService.all;
-              if (favs.isEmpty) return const SizedBox.shrink();
-              return Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  const Text('Избранное', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+                if (!isEmpty) ...[
                   const SizedBox(height: 10),
-                  SizedBox(
-                    height: 84,
-                    child: ListView.builder(
-                      scrollDirection: Axis.horizontal,
-                      itemCount: favs.length,
-                      itemBuilder: (context, i) {
-                        final t = favs[i];
-                        return Padding(
-                          padding: const EdgeInsets.only(right: 14),
-                          child: GestureDetector(
-                            onTap: () => Navigator.push(
-                              context,
-                              MaterialPageRoute(builder: (_) => TickerDetailScreen(ticker: t)),
-                            ),
-                            child: Column(
-                              children: [
-                                TickerAvatar(ticker: t, size: 48),
-                                const SizedBox(height: 6),
-                                Text(t, style: const TextStyle(fontSize: 11, fontWeight: FontWeight.w600)),
-                              ],
-                            ),
-                          ),
-                        );
-                      },
-                    ),
-                  ),
-                  const SizedBox(height: 24),
-                ],
-              );
-            },
-          ),
-
-          // --- Состав портфеля ---
-          if (holdings.isNotEmpty) ...[
-            const Text('Состав портфеля', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
-            const SizedBox(height: 10),
-            ...holdings.entries.map((e) => Card(
-                  elevation: 0,
-                  margin: const EdgeInsets.only(bottom: 6),
-                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
-                  color: Theme.of(context).colorScheme.surfaceContainerLow,
-                  child: ListTile(
-                    leading: TickerAvatar(ticker: e.key, size: 36),
-                    title: Text(e.key, style: const TextStyle(fontWeight: FontWeight.w600)),
-                    subtitle: Text(
-                      '${e.value.qty.toStringAsFixed(e.value.qty == e.value.qty.roundToDouble() ? 0 : 2)} шт • ср. ${e.value.avgCost.toStringAsFixed(2)} → ${e.value.displayPrice.toStringAsFixed(2)}${e.value.hasManualPrice ? " ✎" : ""}',
-                    ),
-                    trailing: Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        Column(
-                          crossAxisAlignment: CrossAxisAlignment.end,
-                          children: [
-                            Text(
-                              e.value.valueRub.toStringAsFixed(0),
-                              style: TextStyle(fontWeight: FontWeight.bold, color: Theme.of(context).colorScheme.primary),
-                            ),
-                            Text(
-                              '${e.value.pnlRub >= 0 ? "+" : ""}${e.value.pnlPct.toStringAsFixed(1)}%',
-                              style: TextStyle(
-                                fontSize: 11,
-                                fontWeight: FontWeight.w600,
-                                color: e.value.pnlRub >= 0 ? Colors.green : Colors.red,
-                              ),
-                            ),
-                          ],
-                        ),
-                        ValueListenableBuilder<int>(
-                          valueListenable: FavoritesService.version,
-                          builder: (context, _, __) {
-                            final isFav = FavoritesService.isFavorite(e.key);
-                            return IconButton(
-                              icon: Icon(isFav ? Icons.star : Icons.star_border,
-                                  size: 20, color: isFav ? Colors.amber : Colors.grey),
-                              onPressed: () => FavoritesService.toggle(e.key),
-                            );
-                          },
-                        ),
-                      ],
-                    ),
-                    onTap: () => Navigator.push(
-                      context,
-                      MaterialPageRoute(builder: (_) => TickerDetailScreen(ticker: e.key)),
-                    ),
-                  ),
-                )),
-            const SizedBox(height: 24),
-          ],
-
-          // --- Пирог по секторам (только текущие бумаги) ---
-          if (bySector.isNotEmpty) ...[
-            const Text('Распределение по секторам', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
-            const SizedBox(height: 12),
-            _buildPieWithLegend(context, bySector, chartKey: 'sectors'),
-            const SizedBox(height: 24),
-          ],
-
-          // --- Пирог по отдельным бумагам (только текущие) ---
-          if (byTicker.isNotEmpty) ...[
-            const Text('Распределение по бумагам', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
-            const SizedBox(height: 12),
-            _buildPieWithLegend(context, byTicker, chartKey: 'tickers'),
-            const SizedBox(height: 24),
-          ],
-
-          // --- Прогноз дохода на 12 мес (по факту прошлых выплат) ---
-          if (dividendForecastRub > 0) ...[
-            Container(
-              padding: const EdgeInsets.all(16),
-              decoration: BoxDecoration(
-                color: Colors.green.withOpacity(0.08),
-                borderRadius: BorderRadius.circular(20),
-              ),
-              child: Row(
-                children: [
-                  const Icon(Icons.query_stats, color: Colors.green, size: 22),
-                  const SizedBox(width: 12),
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        const Text('Ожидаемый доход за 12 мес', style: TextStyle(fontSize: 12, color: Colors.green)),
-                        const SizedBox(height: 2),
-                        Text(
-                          '~${dividendForecastRub.toStringAsFixed(0)} ₽',
-                          style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: Colors.green),
-                        ),
-                        const SizedBox(height: 2),
-                        const Text(
-                          'по факту выплат за прошлый год на сегодняшнее количество бумаг — не гарантия',
-                          style: TextStyle(fontSize: 10.5, color: Colors.green),
-                        ),
-                      ],
-                    ),
-                  ),
-                ],
-              ),
-            ),
-            const SizedBox(height: 24),
-          ],
-
-          // --- Доход по месяцам ---
-          if (StorageService.incomes.isNotEmpty) ...[
-            const Text('Дивиденды и купоны по месяцам', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
-            const SizedBox(height: 10),
-            Wrap(
-              spacing: 8,
-              runSpacing: 6,
-              children: [
-                ChoiceChip(
-                  label: const Text('6 мес'),
-                  selected: _incomeChartPeriod == PeriodFilter.month6,
-                  onSelected: (_) => setState(() => _incomeChartPeriod = PeriodFilter.month6),
-                ),
-                ChoiceChip(
-                  label: const Text('1 год'),
-                  selected: _incomeChartPeriod == PeriodFilter.year1,
-                  onSelected: (_) => setState(() => _incomeChartPeriod = PeriodFilter.year1),
-                ),
-                ChoiceChip(
-                  label: const Text('Всё время'),
-                  selected: _incomeChartPeriod == PeriodFilter.all,
-                  onSelected: (_) => setState(() => _incomeChartPeriod = PeriodFilter.all),
-                ),
-              ],
-            ),
-            const SizedBox(height: 16),
-            if (incomeByMonth.isEmpty)
-              Padding(
-                padding: const EdgeInsets.symmetric(vertical: 24),
-                child: Center(
-                  child: Text('Нет выплат за выбранный период', style: TextStyle(color: Colors.grey.shade500)),
-                ),
-              )
-            else
-              _buildIncomeLineChart(context, incomeByMonth),
-          ],
-
-          if (holdings.isEmpty && income == 0)
-            Padding(
-              padding: const EdgeInsets.symmetric(vertical: 40),
-              child: Center(
-                child: Column(
-                  children: [
-                    Icon(Icons.insights_outlined, size: 56, color: Colors.grey.shade400),
-                    const SizedBox(height: 12),
-                    const Text(
-                      'Добавь первую покупку,\nчтобы увидеть статистику',
-                      textAlign: TextAlign.center,
-                      style: TextStyle(color: Colors.grey),
-                    ),
-                  ],
-                ),
-              ),
-            ),
-        ],
-      ),
-    );
-  }
-
-  static const _monthNames = [
-    'янв', 'фев', 'мар', 'апр', 'май', 'июн',
-    'июл', 'авг', 'сен', 'окт', 'ноя', 'дек',
-  ];
-
-  String _monthLabel(String key) {
-    final parts = key.split('-');
-    final year = parts[0].substring(2);
-    final month = int.parse(parts[1]);
-    return '${_monthNames[month - 1]} $year';
-  }
-
-  Widget _buildIncomeLineChart(BuildContext context, Map<String, double> data) {
-    final keys = data.keys.toList();
-    final values = data.values.toList();
-    final primary = Theme.of(context).colorScheme.primary;
-    final selectedIndex = (_selectedIncomeIndex != null && _selectedIncomeIndex! < values.length) ? _selectedIncomeIndex! : values.length - 1;
-    const pointWidth = 64.0;
-    final needsScroll = keys.length > 6;
-    final chartWidth = needsScroll ? keys.length * pointWidth : null;
-
-    Widget chart = SizedBox(
-      height: 200,
-      width: chartWidth,
-      child: LineChart(
-        LineChartData(
-          gridData: const FlGridData(show: true, drawVerticalLine: false),
-          borderData: FlBorderData(show: false),
-          titlesData: FlTitlesData(
-            topTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)),
-            rightTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)),
-            bottomTitles: AxisTitles(
-              sideTitles: SideTitles(
-                showTitles: true,
-                reservedSize: 30,
-                interval: 1,
-                getTitlesWidget: (value, meta) {
-                  final idx = value.toInt();
-                  if (idx < 0 || idx >= keys.length) return const SizedBox.shrink();
-                  return Padding(
-                    padding: const EdgeInsets.only(top: 6),
-                    child: Text(_monthLabel(keys[idx]), style: const TextStyle(fontSize: 10)),
-                  );
-                },
-              ),
-            ),
-          ),
-          lineTouchData: LineTouchData(
-            touchCallback: (event, response) {
-              final spot = response?.lineBarSpots?.isNotEmpty == true ? response!.lineBarSpots!.first : null;
-              if (spot != null) setState(() => _selectedIncomeIndex = spot.x.toInt());
-            },
-            touchTooltipData: LineTouchTooltipData(
-              getTooltipItems: (spots) => spots.map((s) {
-                return LineTooltipItem(
-                  '${_monthLabel(keys[s.x.toInt()])}\n${values[s.x.toInt()].toStringAsFixed(0)} ₽',
-                  const TextStyle(color: Colors.white, fontSize: 12),
-                );
-              }).toList(),
-            ),
-          ),
-          lineBarsData: [
-            LineChartBarData(
-              spots: [for (int i = 0; i < values.length; i++) FlSpot(i.toDouble(), values[i])],
-              isCurved: true,
-              curveSmoothness: 0.3,
-              color: primary,
-              barWidth: 3,
-              dotData: FlDotData(
-                show: true,
-                getDotPainter: (spot, percent, bar, index) => FlDotCirclePainter(
-                  radius: 3.5,
-                  color: primary,
-                  strokeWidth: 0,
-                ),
-              ),
-              belowBarData: BarAreaData(show: true, color: primary.withOpacity(0.15)),
-            ),
-          ],
-        ),
-      ),
-    );
-
-    if (needsScroll) {
-      chart = SingleChildScrollView(
-        scrollDirection: Axis.horizontal,
-        reverse: true, // сразу открывается на последних (самых свежих) месяцах
-        child: chart,
-      );
-    }
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.stretch,
-      children: [
-        AnimatedContainer(
-          duration: const Duration(milliseconds: 180),
-          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-          decoration: BoxDecoration(
-            color: primary.withOpacity(.1),
-            borderRadius: BorderRadius.circular(16),
-          ),
-          child: Row(
-            children: [
-              Icon(Icons.touch_app_outlined, size: 17, color: primary),
-              const SizedBox(width: 8),
-              Expanded(child: Text(_monthLabel(keys[selectedIndex]), style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 12))),
-              Text('${values[selectedIndex].toStringAsFixed(0)} ₽', style: TextStyle(color: primary, fontWeight: FontWeight.w800)),
-            ],
-          ),
-        ),
-        const SizedBox(height: 10),
-        chart,
-      ],
-    );
-  }
-
-  Widget _buildPieWithLegend(BuildContext context, Map<String, double> data, {required String chartKey}) {
-    final total = data.values.fold(0.0, (s, v) => s + v);
-    final selectedIndex = (_selectedPieIndexes[chartKey] ?? 0).clamp(0, data.length - 1) as int;
-    final selectedLabel = data.keys.elementAt(selectedIndex);
-    final selectedValue = data.values.elementAt(selectedIndex);
-    return Column(
-      children: [
-        SizedBox(
-          height: 160,
-          child: Stack(
-            alignment: Alignment.center,
-            children: [
-              PieChart(
-                PieChartData(
-                  pieTouchData: PieTouchData(
-                    touchCallback: (event, response) {
-                      final index = response?.touchedSection?.touchedSectionIndex;
-                      if (index != null && index >= 0) setState(() => _selectedPieIndexes[chartKey] = index);
-                    },
-                  ),
-                  sections: [
-                    for (int i = 0; i < data.length; i++)
-                      PieChartSectionData(
-                        value: data.values.elementAt(i),
-                        color: _sectorColors[i % _sectorColors.length],
-                        title: '',
-                        radius: i == selectedIndex ? 58 : 48,
-                      ),
-                  ],
-                  sectionsSpace: 3,
-                  centerSpaceRadius: 42,
-                ),
-              ),
-              IgnorePointer(
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Text('${total > 0 ? (selectedValue / total * 100).toStringAsFixed(0) : 0}%', style: const TextStyle(fontSize: 20, fontWeight: FontWeight.w800)),
-                    SizedBox(width: 76, child: Text(selectedLabel, maxLines: 1, overflow: TextOverflow.ellipsis, textAlign: TextAlign.center, style: TextStyle(fontSize: 10, color: Colors.grey.shade600))),
-                  ],
-                ),
-              ),
-            ],
-          ),
-        ),
-        const SizedBox(height: 14),
-        Wrap(
-          spacing: 12,
-          runSpacing: 8,
-          alignment: WrapAlignment.center,
-          children: [
-            for (int i = 0; i < data.length; i++)
-              GestureDetector(
-                onTap: () => setState(() => _selectedPieIndexes[chartKey] = i),
-                child: AnimatedContainer(
-                  duration: const Duration(milliseconds: 180),
-                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
-                  decoration: BoxDecoration(
-                    color: i == selectedIndex ? _sectorColors[i % _sectorColors.length].withOpacity(.16) : Theme.of(context).colorScheme.surfaceContainerLow,
-                    borderRadius: BorderRadius.circular(10),
-                    border: i == selectedIndex ? Border.all(color: _sectorColors[i % _sectorColors.length].withOpacity(.55)) : null,
-                  ),
-                  child: Row(
-                    mainAxisSize: MainAxisSize.min,
+                  Row(
                     children: [
                       Container(
-                        width: 8,
-                        height: 8,
+                        padding: const EdgeInsets.all(5),
                         decoration: BoxDecoration(
-                          color: _sectorColors[i % _sectorColors.length],
-                          shape: BoxShape.circle,
+                          color: AppColors.pnl(totalProfit).withOpacity(0.16),
+                          borderRadius: BorderRadius.circular(8),
+                        ),
+                        child: Icon(
+                          totalProfit >= 0 ? Icons.arrow_outward_rounded : Icons.south_east_rounded,
+                          size: 14,
+                          color: AppColors.pnl(totalProfit),
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      Flexible(
+                        child: RollingNumber(
+                          value: totalProfit,
+                          formatter: (v) => Fmt.signedMoney(v),
+                          style: TextStyle(
+                            fontSize: 15,
+                            fontWeight: FontWeight.w800,
+                            color: AppColors.pnl(totalProfit),
+                          ),
                         ),
                       ),
                       const SizedBox(width: 6),
-                      Text(
-                        '${data.keys.elementAt(i)} ${total > 0 ? (data.values.elementAt(i) / total * 100).toStringAsFixed(0) : 0}%',
-                        style: const TextStyle(fontSize: 11, fontWeight: FontWeight.w600),
-                      ),
+                      Text('общая прибыль', style: TextStyle(fontSize: 11.5, color: context.dim)),
                     ],
                   ),
+                  const SizedBox(height: 6),
+                  Text(
+                    'нереализ. ${Fmt.signedMoney(unrealizedPnl)} · '
+                    'реализ. ${Fmt.signedMoney(realizedPnl)} · '
+                    'доход ${Fmt.signedMoney(totalIncome)}',
+                    style: TextStyle(fontSize: 10.8, color: context.dim, height: 1.3),
+                  ),
+                ],
+                const SizedBox(height: 14),
+                if (timeline.length > 1)
+                  Sparkline(
+                    values: timeline.map((e) => e.value).toList(),
+                    color: accent,
+                    height: 132,
+                    tooltipBuilder: (i, v) => '${Fmt.money(v)}\n${Fmt.date(timeline[i].key)}',
+                  )
+                else
+                  Padding(
+                    padding: const EdgeInsets.symmetric(vertical: 18),
+                    child: Text(
+                      'Добавь первую сделку — здесь появится график стоимости',
+                      style: TextStyle(fontSize: 12, color: context.dim),
+                    ),
+                  ),
+              ],
+            ),
+          ),
+        ),
+      ),
+
+      const SizedBox(height: 18),
+
+      // --- Период статистики ---
+      FadeSlideIn(
+        delay: Duration(milliseconds: 40 * step++),
+        child: PillTabs<PeriodFilter>(
+          values: PeriodFilter.values,
+          selected: _period,
+          labelOf: _periodLabel,
+          onChanged: (v) => setState(() => _period = v),
+        ),
+      ),
+
+      const SizedBox(height: 14),
+
+      // --- Показатели ---
+      FadeSlideIn(
+        delay: Duration(milliseconds: 40 * step++),
+        child: IntrinsicHeight(
+            child: Row(
+          children: [
+            Expanded(
+              child: StatTile(
+                label: 'Вложено своих',
+                icon: Icons.account_balance_wallet_outlined,
+                value: cash.invested,
+                formatter: (v) => Fmt.money(v),
+                hint: cash.withdrawn > 0 ? 'выведено ${Fmt.money(cash.withdrawn)}' : null,
+                color: AppColors.info,
+                onTap: () => _cashSheet(cash),
+              ),
+            ),
+            const SizedBox(width: 10),
+            Expanded(
+              child: StatTile(
+                label: 'Доход за период',
+                icon: Icons.payments_outlined,
+                value: periodIncome,
+                formatter: (v) => Fmt.money(v),
+                color: AppColors.positive,
+              ),
+            ),
+          ],
+        ),
+          ),
+      ),
+
+      const SizedBox(height: 10),
+      FadeSlideIn(
+        delay: Duration(milliseconds: 40 * step++),
+        child: IntrinsicHeight(
+          child: Row(
+            children: [
+              Expanded(
+                child: StatTile(
+                  label: 'Свободные деньги',
+                  icon: Icons.savings_outlined,
+                  value: cash.cash,
+                  formatter: (v) => Fmt.money(v),
+                  hint: 'на счёте, не в бумагах',
+                  color: AppColors.gold,
+                  onTap: () => _cashSheet(cash),
                 ),
               ),
+              const SizedBox(width: 10),
+              Expanded(
+                child: StatTile(
+                  label: 'Получено выплат',
+                  icon: Icons.card_giftcard_rounded,
+                  value: cash.payouts,
+                  formatter: (v) => Fmt.money(v),
+                  hint: 'дивиденды и купоны',
+                  color: AppColors.positive,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+
+      if (xirr != null || forecast > 0) ...[
+        const SizedBox(height: 10),
+        FadeSlideIn(
+          delay: Duration(milliseconds: 40 * step++),
+          child: IntrinsicHeight(
+              child: Row(
+            children: [
+              if (xirr != null)
+                Expanded(
+                  child: StatTile(
+                    label: 'Доходность (XIRR)',
+                    icon: Icons.percent_rounded,
+                    text: '${Fmt.pct(xirr)} год.',
+                    hint: 'с учётом дат вложений',
+                    color: AppColors.pnl(xirr),
+                  ),
+                ),
+              if (xirr != null && forecast > 0) const SizedBox(width: 10),
+              if (forecast > 0)
+                Expanded(
+                  child: StatTile(
+                    label: 'Прогноз на 12 мес',
+                    icon: Icons.auto_graph_rounded,
+                    value: forecast,
+                    formatter: (v) => '~${Fmt.money(v)}',
+                    hint: 'по прошлым выплатам',
+                    color: AppColors.violet,
+                  ),
+                ),
+            ],
+          ),
+            ),
+        ),
+      ],
+
+      if (taxDue > 0) ...[
+        const SizedBox(height: 10),
+        FadeSlideIn(
+          delay: Duration(milliseconds: 40 * step++),
+          child: InfoBanner(
+            icon: Icons.receipt_long_rounded,
+            color: AppColors.warning,
+            text: 'Налог с продаж (НДФЛ): ~${Fmt.money(taxDue)}',
+          ),
+        ),
+      ],
+
+      if (concentration > 40 && topTicker != null) ...[
+        const SizedBox(height: 10),
+        FadeSlideIn(
+          delay: Duration(milliseconds: 40 * step++),
+          child: InfoBanner(
+            icon: Icons.warning_amber_rounded,
+            color: AppColors.warning,
+            text: '$topTicker занимает ${concentration.toStringAsFixed(0)}% портфеля — '
+                'диверсификация низкая',
+          ),
+        ),
+      ],
+    ];
+
+    // --- Избранное ---
+    children.addAll([
+      ValueListenableBuilder<int>(
+        valueListenable: FavoritesService.version,
+        builder: (context, _, __) {
+          final favs = FavoritesService.all;
+          if (favs.isEmpty) return const SizedBox.shrink();
+          return Padding(
+            padding: const EdgeInsets.only(top: 26),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const SectionTitle(title: 'Избранное', subtitle: 'Быстрый доступ к бумагам'),
+                SizedBox(
+                  height: 116,
+                  child: ListView.separated(
+                    scrollDirection: Axis.horizontal,
+                    physics: const BouncingScrollPhysics(),
+                    itemCount: favs.length,
+                    separatorBuilder: (_, __) => const SizedBox(width: 10),
+                    itemBuilder: (context, i) {
+                      final t = favs[i];
+                      final h = holdings[t];
+                      return Pressable(
+                        onTap: () => Navigator.push(
+                          context,
+                          AppPageRoute(builder: (_) => TickerDetailScreen(ticker: t)),
+                        ),
+                        child: Container(
+                          width: 84,
+                          padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 8),
+                          decoration: BoxDecoration(
+                            color: context.isDark ? Colors.white.withOpacity(0.04) : Colors.white,
+                            borderRadius: AppRadius.all(AppRadius.md),
+                            border: Border.all(color: context.hairline),
+                          ),
+                          child: Column(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              TickerAvatar(ticker: t, size: 38),
+                              const SizedBox(height: 8),
+                              Text(
+                                t,
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: const TextStyle(fontSize: 11.5, fontWeight: FontWeight.w700),
+                              ),
+                              if (h != null)
+                                Text(
+                                  Fmt.pct(h.pnlPct),
+                                  style: TextStyle(
+                                    fontSize: 10.5,
+                                    fontWeight: FontWeight.w700,
+                                    color: AppColors.pnl(h.pnlRub),
+                                  ),
+                                ),
+                            ],
+                          ),
+                        ),
+                      );
+                    },
+                  ),
+                ),
+              ],
+            ),
+          );
+        },
+      ),
+    ]);
+
+    // --- Состав портфеля ---
+    // Секция рисуется ВСЕГДА: если позиций нет, важно объяснить почему, а не
+    // молча спрятать блок — иначе экран выглядит сломанным.
+    final entries = holdings.entries.toList()..sort((a, b) => b.value.valueRub.compareTo(a.value.valueRub));
+    final total = entries.fold(0.0, (s, e) => s + e.value.valueRub);
+    children.add(const SizedBox(height: 26));
+    children.add(SectionTitle(
+      title: 'Состав портфеля',
+      subtitle: entries.isEmpty
+          ? 'Открытых позиций нет'
+          : '${entries.length} ${Fmt.papers(entries.length)} · ${Fmt.money(total)}',
+    ));
+    if (entries.isEmpty) {
+      children.add(InfoBanner(
+        icon: Icons.inventory_2_outlined,
+        color: AppColors.neutral,
+        text: StorageService.purchases.isEmpty
+            ? 'Сделок пока нет — добавь первую на вкладке «Сделки».'
+            : 'Сделки есть, но по всем бумагам куплено ровно столько же, сколько продано, '
+                'поэтому открытых позиций не осталось. Проверь количество в продажах и '
+                'написание тикеров: «SBER» и «Sber» считаются разными бумагами.',
+      ));
+    }
+    for (int i = 0; i < entries.length; i++) {
+      final e = entries[i];
+      children.add(Padding(
+        padding: const EdgeInsets.only(bottom: 8),
+        child: FadeSlideIn.staggered(
+          index: i,
+          child: _holdingTile(context, e.key, e.value, total <= 0 ? 0 : e.value.valueRub / total),
+        ),
+      ));
+    }
+
+    // --- Распределение ---
+    final allocData = _alloc == _AllocationMode.sectors ? bySector : byTicker;
+    if (allocData.isNotEmpty) {
+      children.add(const SizedBox(height: 20));
+      children.add(AppCard(
+        padding: const EdgeInsets.fromLTRB(16, 16, 16, 20),
+        child: Column(
+          children: [
+            const SectionTitle(
+              title: 'Распределение',
+              subtitle: 'Доли текущих позиций',
+              padding: EdgeInsets.only(bottom: 12),
+            ),
+            Align(
+              alignment: Alignment.centerLeft,
+              child: PillTabs<_AllocationMode>(
+                scrollable: false,
+                values: _AllocationMode.values,
+                selected: _alloc,
+                labelOf: (m) => m == _AllocationMode.sectors ? 'По секторам' : 'По бумагам',
+                onChanged: (m) => setState(() => _alloc = m),
+              ),
+            ),
+            const SizedBox(height: 16),
+            DonutChart(
+              data: allocData,
+              valueFormatter: (v) => Fmt.money(v),
+              centerLabel: _alloc == _AllocationMode.sectors ? 'Всего по секторам' : 'Всего по бумагам',
+            ),
           ],
+        ),
+      ));
+    }
+
+    // --- Доход по месяцам ---
+    if (StorageService.incomes.isNotEmpty) {
+      children.add(const SizedBox(height: 20));
+      children.add(AppCard(
+        padding: const EdgeInsets.fromLTRB(14, 16, 14, 14),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const SectionTitle(
+              title: 'Дивиденды и купоны',
+              subtitle: 'Полученные выплаты по месяцам',
+              padding: EdgeInsets.only(bottom: 12, left: 2),
+            ),
+            PillTabs<PeriodFilter>(
+              values: const [PeriodFilter.month6, PeriodFilter.year1, PeriodFilter.all],
+              selected: _incomePeriod,
+              labelOf: _periodLabel,
+              onChanged: (v) => setState(() => _incomePeriod = v),
+            ),
+            const SizedBox(height: 14),
+            BarsChart(
+              values: incomeByMonth.values.toList(),
+              labels: incomeByMonth.keys.map(Fmt.monthKeyLabel).toList(),
+              color: AppColors.positive,
+              valueFormatter: (v) => Fmt.compact(v),
+            ),
+          ],
+        ),
+      ));
+    }
+
+    if (isEmpty) {
+      children.add(const SizedBox(height: 30));
+      children.add(const EmptyState(
+        icon: Icons.insights_rounded,
+        title: 'Портфель пока пуст',
+        subtitle: 'Добавь первую сделку на вкладке «Сделки» — и здесь появятся '
+            'графики, состав портфеля и вся статистика.',
+      ));
+    }
+
+    children.add(const SizedBox(height: kListBottomPadding));
+
+    return Scaffold(
+      backgroundColor: Colors.transparent,
+      body: AuroraBackground(
+        profit: totalProfit,
+        child: SafeArea(
+          bottom: false,
+          child: ListView(
+            padding: const EdgeInsets.fromLTRB(16, 8, 16, 0),
+            physics: const BouncingScrollPhysics(parent: AlwaysScrollableScrollPhysics()),
+            children: children,
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _header(BuildContext context) {
+    final name = PortfolioService.list.isEmpty ? 'Портфель' : PortfolioService.active.name;
+    return Row(
+      children: [
+        _circleButton(
+          context,
+          icon: Icons.grid_view_rounded,
+          tooltip: 'Все портфели',
+          onTap: () => Navigator.of(context).maybePop(),
+        ),
+        const SizedBox(width: 12),
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                'МОЙ ПОРТФЕЛЬ',
+                style: TextStyle(fontSize: 10, letterSpacing: 1.6, fontWeight: FontWeight.w700, color: context.dim),
+              ),
+              const SizedBox(height: 2),
+              Text(
+                name,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: Theme.of(context).textTheme.headlineSmall,
+              ),
+            ],
+          ),
+        ),
+        _circleButton(
+          context,
+          icon: Icons.auto_awesome_rounded,
+          tooltip: 'Итоги в формате сторис',
+          highlight: true,
+          onTap: () => Navigator.push(context, AppPageRoute(builder: (_) => const WrappedScreen())),
         ),
       ],
     );
   }
 
-  Widget _miniStat(BuildContext context, String label, double value, IconData icon) {
-    final primary = Theme.of(context).colorScheme.primary;
-    return Container(
-      padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(
-        color: Theme.of(context).colorScheme.surfaceContainerLow,
-        borderRadius: BorderRadius.circular(20),
-        border: Border.all(color: Theme.of(context).colorScheme.outlineVariant.withOpacity(.45)),
+  Widget _circleButton(
+    BuildContext context, {
+    required IconData icon,
+    required VoidCallback onTap,
+    String? tooltip,
+    bool highlight = false,
+  }) {
+    final accent = context.accent;
+    final button = Pressable(
+      onTap: onTap,
+      child: Container(
+        width: 42,
+        height: 42,
+        decoration: BoxDecoration(
+          shape: BoxShape.circle,
+          gradient: highlight ? AppGradient.accent(accent) : null,
+          color: highlight ? null : (context.isDark ? Colors.white.withOpacity(0.06) : Colors.white),
+          border: Border.all(color: highlight ? Colors.transparent : context.hairline),
+          boxShadow: highlight
+              ? [BoxShadow(color: accent.withOpacity(0.4), blurRadius: 16, offset: const Offset(0, 6))]
+              : null,
+        ),
+        child: Icon(icon, size: 20, color: highlight ? Colors.white : context.dim),
       ),
+    );
+    return tooltip == null ? button : Tooltip(message: tooltip, child: button);
+  }
+
+
+  /// Счёт: сколько своих денег вложено, что лежит свободными и откуда это
+  /// взялось. Пополнения приложение считает само по сделкам, вывод — то
+  /// единственное, что нужно записать руками.
+  void _cashSheet(CashSummary cash) {
+    showAppSheet(
+      context: context,
+      builder: (ctx) => DraggableScrollableSheet(
+        initialChildSize: 0.8,
+        minChildSize: 0.5,
+        maxChildSize: 0.95,
+        expand: false,
+        builder: (ctx, scroll) => ListView(
+          controller: scroll,
+          padding: const EdgeInsets.fromLTRB(20, 14, 20, 28),
+          children: [
+            SheetHeader(
+              title: 'Счёт',
+              subtitle: 'Движение денег по портфелю',
+              trailing: IconButton(
+                icon: const Icon(Icons.close_rounded),
+                onPressed: () => Navigator.pop(ctx),
+              ),
+            ),
+            const SizedBox(height: 16),
+            IntrinsicHeight(
+              child: Row(
+                children: [
+                  Expanded(
+                    child: StatTile(
+                      label: 'Вложено своих',
+                      icon: Icons.account_balance_wallet_outlined,
+                      value: cash.invested,
+                      formatter: (v) => Fmt.money(v),
+                      color: AppColors.info,
+                    ),
+                  ),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: StatTile(
+                      label: 'Свободные деньги',
+                      icon: Icons.savings_outlined,
+                      value: cash.cash,
+                      formatter: (v) => Fmt.money(v),
+                      color: AppColors.gold,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            if (cash.autoInvested > 0) ...[
+              const SizedBox(height: 12),
+              InfoBanner(
+                icon: Icons.auto_fix_high_rounded,
+                color: AppColors.info,
+                text: 'Из вложенного ${Fmt.money(cash.autoInvested)} приложение определило само: '
+                    'когда на покупку денег на счёте не хватало, недостающая сумма считается '
+                    'пополнением в этот день.',
+              ),
+            ],
+            if (cash.cash > 0) ...[
+              const SizedBox(height: 12),
+              InfoBanner(
+                icon: Icons.info_outline_rounded,
+                color: AppColors.warning,
+                text: 'На счёте числится ${Fmt.money(cash.cash)} свободными. Если этих денег '
+                    'у брокера уже нет — запиши вывод, иначе следующая покупка спишется '
+                    'с них и «Вложено» окажется занижено.',
+              ),
+            ],
+            const SizedBox(height: 14),
+            Row(
+              children: [
+                Expanded(
+                  child: OutlinedButton.icon(
+                    onPressed: () => _cashEntrySheet(withdrawal: true),
+                    icon: const Icon(Icons.north_east_rounded, size: 17),
+                    label: const Text('Вывод'),
+                  ),
+                ),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: OutlinedButton.icon(
+                    onPressed: () => _cashEntrySheet(withdrawal: false),
+                    icon: const Icon(Icons.south_west_rounded, size: 17),
+                    label: const Text('Пополнение'),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 18),
+            const SectionTitle(title: 'История', padding: EdgeInsets.only(bottom: 10)),
+            ...cash.moves.take(120).map((m) => _cashRow(ctx, m)),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _cashRow(BuildContext ctx, CashMove m) {
+    final (IconData icon, Color color) = switch (m.kind) {
+      CashMoveKind.deposit => (Icons.south_west_rounded, AppColors.info),
+      CashMoveKind.autoDeposit => (Icons.auto_fix_high_rounded, AppColors.info),
+      CashMoveKind.withdrawal => (Icons.north_east_rounded, AppColors.warning),
+      CashMoveKind.buy => (Icons.shopping_bag_outlined, AppColors.negative),
+      CashMoveKind.sell => (Icons.sell_outlined, AppColors.positive),
+      CashMoveKind.payout => (Icons.card_giftcard_rounded, AppColors.positive),
+    };
+
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 8),
       child: Row(
         children: [
           Container(
-            width: 38,
-            height: 38,
-            decoration: BoxDecoration(color: primary.withOpacity(.12), borderRadius: BorderRadius.circular(13)),
-            child: Icon(icon, size: 20, color: primary),
+            width: 32,
+            height: 32,
+            decoration: BoxDecoration(
+              borderRadius: BorderRadius.circular(10),
+              color: color.withOpacity(0.14),
+            ),
+            child: Icon(icon, size: 16, color: color),
           ),
-          const SizedBox(width: 12),
+          const SizedBox(width: 11),
           Expanded(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text(label.toUpperCase(), style: TextStyle(fontSize: 9.5, fontWeight: FontWeight.w700, letterSpacing: .7, color: Colors.grey.shade500)),
-                const SizedBox(height: 2),
-                Text('${value.toStringAsFixed(0)} ₽', style: const TextStyle(fontWeight: FontWeight.w800, fontSize: 16, letterSpacing: -.3)),
+                Text(
+                  m.title,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w700),
+                ),
+                Text(Fmt.date(m.date), style: TextStyle(fontSize: 10.5, color: context.dim)),
               ],
             ),
           ),
+          Text(
+            Fmt.signedMoney(m.amountRub),
+            style: TextStyle(
+              fontSize: 13,
+              fontWeight: FontWeight.w800,
+              color: AppColors.pnl(m.amountRub),
+            ),
+          ),
+          if (m.depositId != null)
+            IconButton(
+              visualDensity: VisualDensity.compact,
+              icon: Icon(Icons.delete_outline_rounded, size: 17, color: context.dim),
+              onPressed: () async {
+                await StorageService.deleteDeposit(m.depositId!);
+                if (ctx.mounted) Navigator.pop(ctx);
+              },
+            ),
         ],
       ),
     );
   }
 
-  Widget _heroMetric(String text) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
-      decoration: BoxDecoration(
-        color: Colors.white.withOpacity(.09),
-        borderRadius: BorderRadius.circular(8),
+  void _cashEntrySheet({required bool withdrawal}) {
+    final amountCtrl = TextEditingController();
+    final noteCtrl = TextEditingController();
+    DateTime date = DateTime.now();
+
+    showAppSheet(
+      context: context,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setSheetState) => SingleChildScrollView(
+          padding: EdgeInsets.fromLTRB(20, 14, 20, MediaQuery.of(ctx).viewInsets.bottom + 24),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              SheetHeader(
+                title: withdrawal ? 'Вывод со счёта' : 'Пополнение счёта',
+                subtitle: withdrawal
+                    ? 'Деньги, которые ты снял у брокера'
+                    : 'Если хочешь записать пополнение точно, а не доверять расчёту',
+                trailing: IconButton(
+                  icon: const Icon(Icons.close_rounded),
+                  onPressed: () => Navigator.pop(ctx),
+                ),
+              ),
+              const SizedBox(height: 18),
+              AppTextField(controller: amountCtrl, label: 'Сумма, ₽', number: true, autofocus: true),
+              const SizedBox(height: 12),
+              AppDateField(
+                value: date,
+                label: 'Дата',
+                lastDate: DateTime.now(),
+                firstDate: DateTime(2000),
+                onPicked: (d) => setSheetState(() => date = d),
+              ),
+              const SizedBox(height: 12),
+              AppTextField(controller: noteCtrl, label: 'Заметка (необязательно)'),
+              const SizedBox(height: 22),
+              GradientButton(
+                label: 'Сохранить',
+                icon: Icons.check_rounded,
+                onPressed: () async {
+                  final amount = double.tryParse(amountCtrl.text.replaceAll(',', '.'));
+                  if (amount == null || amount <= 0) return;
+                  await StorageService.addDeposit(Deposit(
+                    id: const Uuid().v4(),
+                    date: date,
+                    amount: withdrawal ? -amount : amount,
+                    note: noteCtrl.text.trim().isEmpty ? null : noteCtrl.text.trim(),
+                  ));
+                  if (ctx.mounted) Navigator.pop(ctx);
+                },
+              ),
+            ],
+          ),
+        ),
       ),
-      child: Text(text, style: const TextStyle(color: Colors.white70, fontSize: 10)),
+    );
+  }
+
+  Widget _holdingTile(BuildContext context, String ticker, HoldingInfo h, double weight) {
+    final pnlColor = AppColors.pnl(h.pnlRub);
+    return AppCard(
+      padding: const EdgeInsets.fromLTRB(12, 12, 12, 12),
+      onTap: () => Navigator.push(
+        context,
+        AppPageRoute(builder: (_) => TickerDetailScreen(ticker: ticker)),
+      ),
+      child: Column(
+        children: [
+          Row(
+            children: [
+              Hero(tag: 'logo-$ticker', child: TickerAvatar(ticker: ticker, size: 42)),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      children: [
+                        Flexible(
+                          child: Text(
+                            ticker,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w800),
+                          ),
+                        ),
+                        if (h.hasManualPrice) ...[
+                          const SizedBox(width: 6),
+                          Icon(Icons.edit_rounded, size: 11, color: context.dim),
+                        ],
+                      ],
+                    ),
+                    const SizedBox(height: 2),
+                    Text(
+                      '${Fmt.qty(h.qty)} шт · ${h.avgCost.toStringAsFixed(2)} → ${h.displayPrice.toStringAsFixed(2)}',
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(fontSize: 11.5, color: context.dim, fontWeight: FontWeight.w600),
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(width: 8),
+              Column(
+                crossAxisAlignment: CrossAxisAlignment.end,
+                children: [
+                  Text(
+                    Fmt.money(h.valueRub),
+                    style: const TextStyle(fontSize: 14.5, fontWeight: FontWeight.w800),
+                  ),
+                  const SizedBox(height: 3),
+                  TagChip(text: Fmt.pct(h.pnlPct), color: pnlColor, fontSize: 10.5),
+                ],
+              ),
+              ValueListenableBuilder<int>(
+                valueListenable: FavoritesService.version,
+                builder: (context, _, __) {
+                  final isFav = FavoritesService.isFavorite(ticker);
+                  return IconButton(
+                    visualDensity: VisualDensity.compact,
+                    icon: Icon(
+                      isFav ? Icons.star_rounded : Icons.star_border_rounded,
+                      size: 20,
+                      color: isFav ? AppColors.gold : context.dim,
+                    ),
+                    onPressed: () => FavoritesService.toggle(ticker),
+                  );
+                },
+              ),
+            ],
+          ),
+          const SizedBox(height: 10),
+          Row(
+            children: [
+              Expanded(child: MiniProgressBar(value: weight, color: context.accent)),
+              const SizedBox(width: 8),
+              Text(
+                '${(weight * 100).toStringAsFixed(1)}%',
+                style: TextStyle(fontSize: 10.5, fontWeight: FontWeight.w700, color: context.dim),
+              ),
+            ],
+          ),
+        ],
+      ),
     );
   }
 }

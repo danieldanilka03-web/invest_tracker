@@ -4,6 +4,8 @@ import '../models/income.dart';
 import 'storage_service.dart';
 import 'currency_service.dart';
 import 'manual_price_service.dart';
+import 'online_price_service.dart';
+import 'online_settings_service.dart';
 import 'sector_service.dart';
 
 /// Фильтр периода для статистики
@@ -72,6 +74,17 @@ class DividendForecast {
 }
 
 class AnalyticsService {
+  /// Актуальная цена бумаги из сети — если загрузка с биржи включена и
+  /// котировка по этой бумаге есть. Когда онлайн выключен, метод всегда
+  /// возвращает null, и оценка портфеля считается ровно как раньше.
+  ///
+  /// Приоритет: биржа → ручная цена → цена последней сделки. Ручная цена
+  /// остаётся запасным вариантом для того, что на бирже не торгуется.
+  static double? priceFor(String ticker) {
+    if (!OnlineSettingsService.enabled) return null;
+    return OnlinePriceService.get(ticker)?.price;
+  }
+
   static DateTime? _periodStart(PeriodFilter f) {
     final now = DateTime.now();
     switch (f) {
@@ -175,14 +188,14 @@ class AnalyticsService {
 
       if (p.isSell) {
         final curQty = qty[t]!;
+        final sellQty = p.quantity > curQty ? curQty : p.quantity;
         if (curQty > 0) {
           final avgCostPerUnit = costBasis[t]! / curQty;
           final avgCostRubPerUnit = costBasisRub[t]! / curQty;
-          final sellQty = p.quantity > curQty ? curQty : p.quantity;
           costBasis[t] = costBasis[t]! - sellQty * avgCostPerUnit;
           costBasisRub[t] = costBasisRub[t]! - sellQty * avgCostRubPerUnit;
         }
-        final newQty = curQty - p.quantity;
+        final newQty = curQty - sellQty;
         qty[t] = newQty < 0 ? 0 : newQty;
       } else {
         costBasis[t] = costBasis[t]! + p.quantity * p.pricePerUnit + p.fee;
@@ -199,7 +212,7 @@ class AnalyticsService {
       final avgCost = costBasis[ticker]! / q;
       final lastPx = lastPrice[ticker] ?? avgCost;
       final manualPx = ManualPriceService.get(ticker);
-      final displayPx = manualPx ?? lastPx;
+      final displayPx = priceFor(ticker) ?? manualPx ?? lastPx;
       result[ticker] = HoldingInfo(
         qty: q,
         avgCost: avgCost,
@@ -238,16 +251,16 @@ class AnalyticsService {
 
       if (p.isSell) {
         final curQty = qty[t]!;
+        final sellQty = p.quantity > curQty ? curQty : p.quantity;
         if (curQty > 0) {
           final avgCostRubPerUnit = costBasisRub[t]! / curQty;
-          final sellQty = p.quantity > curQty ? curQty : p.quantity;
           final proceedsRub =
               CurrencyService.toRub(sellQty * p.pricePerUnit - p.fee, p.currency, date: p.date);
           final costOfSoldRub = sellQty * avgCostRubPerUnit;
           realizedRub += proceedsRub - costOfSoldRub;
           costBasisRub[t] = costBasisRub[t]! - costOfSoldRub;
         }
-        final newQty = curQty - p.quantity;
+        final newQty = curQty - sellQty;
         qty[t] = newQty < 0 ? 0 : newQty;
       } else {
         costBasisRub[t] = costBasisRub[t]! +
@@ -574,7 +587,7 @@ class AnalyticsService {
       final cur = currencyOf[ticker] ?? 'RUB';
       final lastPx = lastPrice[ticker] ?? 0;
       final manualPx = ManualPriceService.get(ticker);
-      final displayPx = manualPx ?? lastPx;
+      final displayPx = priceFor(ticker) ?? manualPx ?? lastPx;
       final v = CurrencyService.toRub(q * displayPx, cur);
       valueRub += v;
       unrealizedRub += v - costBasisRub[ticker]!;

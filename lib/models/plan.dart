@@ -46,6 +46,17 @@ class Plan extends HiveObject {
   @HiveField(9)
   DateTime createdAt;
 
+  /// Сколько уже куплено в счёт этого плана — накапливается только через
+  /// галку "Учитывать в ближайшем плане этого месяца" на форме покупки,
+  /// НЕ пересчитывается автоматически из всех сделок по тикеру.
+  @HiveField(10)
+  double purchasedQuantity;
+
+  /// Средняя цена покупок, накопленных через ту же галку (взвешенная по
+  /// количеству).
+  @HiveField(11)
+  double purchasedAvgPrice;
+
   Plan({
     required this.id,
     required this.ticker,
@@ -57,6 +68,8 @@ class Plan extends HiveObject {
     this.status = PlanStatus.active,
     this.note,
     required this.createdAt,
+    this.purchasedQuantity = 0.0,
+    this.purchasedAvgPrice = 0.0,
   });
 
   double? get estimatedTotal =>

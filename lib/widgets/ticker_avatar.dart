@@ -2,36 +2,40 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import '../services/logo_service.dart';
 
-/// Показывает загруженный пользователем логотип бумаги, если он есть,
-/// иначе — генерирует стабильную цветную аватарку с инициалами тикера
-/// (одинаковую между запусками приложения для одного и того же тикера).
+/// Показывает загруженный пользователем логотип бумаги, если он есть, иначе
+/// генерирует стабильную (одинаковую между запусками) градиентную аватарку
+/// с инициалами тикера. В редизайне добавлены мягкое цветное свечение под
+/// аватаркой и тонкая светлая кромка — так иконки не «прилипают» к фону
+/// карточек и выглядят объёмно на обеих темах.
 class TickerAvatar extends StatelessWidget {
   final String ticker;
   final double size;
+  final bool glow;
 
-  const TickerAvatar({super.key, required this.ticker, this.size = 40});
+  const TickerAvatar({super.key, required this.ticker, this.size = 42, this.glow = true});
 
   static const List<List<Color>> _palettes = [
-    [Color(0xFF6C5CE7), Color(0xFFA29BFE)],
-    [Color(0xFF00B894), Color(0xFF55EFC4)],
-    [Color(0xFFE17055), Color(0xFFFAB1A0)],
-    [Color(0xFF0984E3), Color(0xFF74B9FF)],
-    [Color(0xFFE84393), Color(0xFFFD79A8)],
-    [Color(0xFFD63031), Color(0xFFFF7675)],
-    [Color(0xFF00CEC9), Color(0xFF81ECEC)],
-    [Color(0xFFFDCB6E), Color(0xFFFFEAA7)],
-    [Color(0xFF6C5B7B), Color(0xFFC06C84)],
-    [Color(0xFF2D3436), Color(0xFF636E72)],
+    [Color(0xFF7C6CFF), Color(0xFFB39DFF)],
+    [Color(0xFF00C48C), Color(0xFF5BE7B5)],
+    [Color(0xFFFF8A5B), Color(0xFFFFC29B)],
+    [Color(0xFF3DA9FC), Color(0xFF8ACDFF)],
+    [Color(0xFFFF5C93), Color(0xFFFF9BC0)],
+    [Color(0xFFEF4444), Color(0xFFFF8A80)],
+    [Color(0xFF06B6D4), Color(0xFF7DE3F4)],
+    [Color(0xFFF5B027), Color(0xFFFFD87A)],
+    [Color(0xFF8B5CF6), Color(0xFFC4A6FF)],
+    [Color(0xFF475569), Color(0xFF94A3B8)],
   ];
 
   List<Color> get _gradient {
-    final hash = ticker.codeUnits.fold<int>(0, (a, b) => a + b);
-    return _palettes[hash % _palettes.length];
+    // Хэш по кодам символов — стабилен между запусками, поэтому у бумаги
+    // всегда один и тот же цвет.
+    final hash = ticker.codeUnits.fold<int>(0, (a, b) => a + b * 31);
+    return _palettes[hash.abs() % _palettes.length];
   }
 
   String get _initials {
     if (ticker.isEmpty) return '?';
-    // для длинных тикеров облигаций берём первые 2 буквы, иначе 2-3 значимых символа
     final clean = ticker.replaceAll(RegExp(r'[^A-Za-zА-Яа-я0-9]'), '');
     if (clean.isEmpty) return '?';
     return clean.length >= 2 ? clean.substring(0, 2).toUpperCase() : clean.toUpperCase();
@@ -39,31 +43,45 @@ class TickerAvatar extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    // Слушаем LogoService.version, чтобы аватарка перерисовывалась сама —
-    // на ЛЮБОМ экране, где она используется — сразу, как только логотип
-    // где-то изменили/удалили, без необходимости заходить на этот экран заново.
+    // Слушаем LogoService.version, чтобы аватарка перерисовалась на любом
+    // экране сразу после смены/удаления логотипа.
     return ValueListenableBuilder<int>(
       valueListenable: LogoService.version,
       builder: (context, _, __) {
         final logoPath = LogoService.getPath(ticker);
-        if (logoPath != null) {
-          return ClipOval(
-            child: Image.file(
-              File(logoPath),
-              width: size,
-              height: size,
-              fit: BoxFit.cover,
-              errorBuilder: (context, error, stack) => _fallback(),
-            ),
-          );
-        }
-        return _fallback();
+        final colors = _gradient;
+        return Container(
+          width: size,
+          height: size,
+          decoration: BoxDecoration(
+            shape: BoxShape.circle,
+            boxShadow: glow
+                ? [
+                    BoxShadow(
+                      color: colors.first.withOpacity(0.38),
+                      blurRadius: size * 0.32,
+                      offset: Offset(0, size * 0.12),
+                    ),
+                  ]
+                : null,
+          ),
+          child: logoPath != null
+              ? ClipOval(
+                  child: Image.file(
+                    File(logoPath),
+                    width: size,
+                    height: size,
+                    fit: BoxFit.cover,
+                    errorBuilder: (context, error, stack) => _fallback(colors),
+                  ),
+                )
+              : _fallback(colors),
+        );
       },
     );
   }
 
-  Widget _fallback() {
-    final colors = _gradient;
+  Widget _fallback(List<Color> colors) {
     return Container(
       width: size,
       height: size,
@@ -74,22 +92,16 @@ class TickerAvatar extends StatelessWidget {
           begin: Alignment.topLeft,
           end: Alignment.bottomRight,
         ),
-        boxShadow: [
-          BoxShadow(
-            color: colors[0].withOpacity(0.3),
-            blurRadius: 6,
-            offset: const Offset(0, 3),
-          ),
-        ],
+        border: Border.all(color: Colors.white.withOpacity(0.22), width: 1),
       ),
       alignment: Alignment.center,
       child: Text(
         _initials,
         style: TextStyle(
           color: Colors.white,
-          fontWeight: FontWeight.bold,
-          fontSize: size * 0.34,
-          letterSpacing: -0.5,
+          fontWeight: FontWeight.w800,
+          fontSize: size * 0.35,
+          letterSpacing: -0.6,
         ),
       ),
     );
